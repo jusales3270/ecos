@@ -8,6 +8,7 @@ from ecos.context import ContextProvider
 from ecos.debate import DebateProvider
 from ecos.decision import DecisionProvider
 from ecos.events import EventBus, EventType
+
 from ecos.main import app
 from ecos.memory import MemoryRepository, MemoryType
 from ecos.orchestrator import OrchestratorProvider
@@ -50,7 +51,7 @@ def test_fake_runtime_implementations_satisfy_architecture_interfaces() -> None:
 
 def test_runtime_engine_run_returns_completed_recommendation() -> None:
     """RuntimeEngine runs the full fake cognitive flow without external calls."""
-    result = RuntimeEngine().run("Improve organizational decision quality")
+
 
     assert UUID(result.session_id)
     assert result.status == "completed"
@@ -62,7 +63,7 @@ def test_runtime_engine_run_returns_completed_recommendation() -> None:
 
 def test_cognitive_pipeline_records_memory_events_and_session_completion() -> None:
     """CognitivePipeline records memory, events and final session state."""
-    pipeline = CognitivePipeline()
+
     result = pipeline.run("Coordinate a governed market expansion decision")
     session_id = UUID(result.session_id)
 
@@ -94,7 +95,7 @@ def test_cognitive_pipeline_records_memory_events_and_session_completion() -> No
 def test_runtime_engine_rejects_blank_objective() -> None:
     """RuntimeEngine rejects blank objectives before creating a session."""
     try:
-        RuntimeEngine().run("   ")
+
     except ValueError as exc:
         assert str(exc) == "objective cannot be blank"
     else:
@@ -121,3 +122,4 @@ def test_runtime_demo_endpoint_returns_expected_contract() -> None:
         ),
         "confidence": 0.91,
     }
+

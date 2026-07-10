@@ -30,6 +30,7 @@ def test_container_registers_services_fake_providers_and_runtime() -> None:
     health = container.health()
 
     assert isinstance(container.runtime_engine, RuntimeEngine)
+
     assert container.memory_service is not None
     assert container.context_service is not None
     assert container.event_service is not None

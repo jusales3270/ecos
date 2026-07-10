@@ -143,13 +143,7 @@ class FakeMemoryRepository(MemoryRepository):
 class FakeContextProvider(ContextProvider):
     """Fake context provider that builds deterministic context objects."""
 
-    def __init__(self, session_id: UUID, objective: Objective) -> None:
-        """Initialize the provider with runtime session data."""
-        self._session_id = session_id
-        self._objective = objective
 
-    def build(self) -> ContextObject:
-        """Build a deterministic context object."""
         element = ContextElement(
             source_type=ContextSourceType.USER,
             priority=ContextPriority.HIGH,

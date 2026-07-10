@@ -7,8 +7,7 @@ from ecos.debate import Debate, DebateService
 from ecos.decision import DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
 from ecos.domain.enums import SessionStatus
-from ecos.events import Event, EventPriority, EventService, EventType
-from ecos.memory import MemoryObject, MemoryService, MemoryType
+
 from ecos.orchestrator import (
     ExecutionMode,
     ExecutionPlan,
@@ -18,7 +17,7 @@ from ecos.orchestrator import (
     OrchestratorService,
 )
 from ecos.planner import CognitivePlan, ExecutionStrategy, PlannerService
-from ecos.providers import AIService, ProviderRegistry, ProviderType
+
 from ecos.reasoning import ReasoningContext, ReasoningService, ReasoningType
 from ecos.runtime.fakes import (
     FakeAIProvider,
@@ -38,6 +37,7 @@ from ecos.session import (
     ManagedSession,
     SessionContext,
     SessionLifecycleStatus,
+
     SessionService,
     SessionSnapshot,
     SessionState,
@@ -50,33 +50,7 @@ from ecos.specialists import SpecialistRegistry, SpecialistService
 class CognitivePipeline:
     """Coordinates the first deterministic ECOS cognitive pipeline."""
 
-    def __init__(self) -> None:
-        """Initialize fake repositories, providers, registries and services."""
-        self.memory_repository = FakeMemoryRepository()
-        self.session_repository = FakeSessionRepository()
-        self.event_bus = FakeEventBus()
-        self.planner_provider = FakePlannerProvider()
-        self.reasoning_provider = FakeReasoningProvider()
-        self.specialist_provider = FakeSpecialistProvider()
-        self.debate_provider = FakeDebateProvider()
-        self.decision_provider = FakeDecisionProvider()
-        self.orchestrator_provider = FakeOrchestratorProvider()
-        self.ai_provider = FakeAIProvider()
 
-        self.memory_service = MemoryService(self.memory_repository)
-        self.session_service = SessionService(self.session_repository)
-        self.event_service = EventService(self.event_bus)
-        self.planner_service = PlannerService(self.planner_provider)
-        self.reasoning_service = ReasoningService(self.reasoning_provider)
-        self.specialist_service = SpecialistService(
-            self.specialist_provider,
-            SpecialistRegistry(),
-        )
-        self.debate_service = DebateService(self.debate_provider)
-        self.decision_service = DecisionService(self.decision_provider)
-        self.orchestrator_service = OrchestratorService(self.orchestrator_provider)
-        self.ai_service = AIService(ProviderRegistry())
-        self.ai_service.register(ProviderType.CUSTOM, self.ai_provider, default=True)
 
     def run(self, objective: str) -> RuntimeResult:
         """Run the deterministic cognitive pipeline for an objective."""
@@ -112,11 +86,7 @@ class CognitivePipeline:
             active_engine="context",
             progress=0.2,
         )
-        context_service = ContextService(
-            FakeContextProvider(session_id, execution.cognitive_session.objective)
-        )
-        context = context_service.build()
-        if not context_service.validate(context):
+
             msg = "runtime context validation failed"
             raise RuntimeError(msg)
         execution.context = context
@@ -435,6 +405,4 @@ class CognitivePipeline:
 class RuntimeEngine:
     """Public runtime engine entrypoint for the demo cognitive pipeline."""
 
-    def run(self, objective: str) -> RuntimeResult:
-        """Run the first executable ECOS cognitive pipeline."""
-        return CognitivePipeline().run(objective)
+

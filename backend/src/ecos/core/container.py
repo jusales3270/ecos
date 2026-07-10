@@ -26,6 +26,7 @@ from ecos.runtime import (
     FakeReasoningProvider,
     FakeSessionRepository,
     FakeSpecialistProvider,
+
     RuntimeEngine,
 )
 from ecos.session import SessionService
@@ -72,7 +73,7 @@ class Container:
         self.orchestrator_service = OrchestratorService(self.orchestrator_provider)
         self.ai_service = AIService(ProviderRegistry())
         self.ai_service.register(ProviderType.CUSTOM, self.ai_provider, default=True)
-        self.runtime_engine = RuntimeEngine()
+
 
     def health(self) -> dict[str, Any]:
         """Return container, provider and runtime health information."""
