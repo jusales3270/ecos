@@ -27,29 +27,7 @@ tests/     Testes automatizados e recursos de validação.
 Este repositório contém o baseline inicial de organização e um backend FastAPI mínimo com endpoint de health check.
 
 
-## Domínio
 
-O núcleo de domínio inicial está em `backend/src/ecos/domain/` e modela apenas entidades e enums com Pydantic v2. Esta camada ainda não implementa banco de dados, APIs, memória, LLMs ou lógica cognitiva.
-
-## Debate Engine
-
-A arquitetura inicial do Debate Engine está em `backend/src/ecos/debate/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa IA, prompts, OpenAI, Anthropic ou lógica de consenso.
-
-## Specialist Framework
-
-A arquitetura inicial do Specialist Framework está em `backend/src/ecos/specialists/` e define apenas modelos, interface de provider, registry e serviço de orquestração por abstração. Esta camada ainda não implementa IA, prompts, OpenAI, Anthropic ou Debate.
-
-## Reasoning Engine
-
-A arquitetura inicial do Reasoning Engine está em `backend/src/ecos/reasoning/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa OpenAI, Anthropic, prompts, IA ou qualquer integração com LLM.
-
-## Context Engine
-
-A arquitetura inicial do Context Engine está em `backend/src/ecos/context/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa banco de dados, Knowledge Graph, busca vetorial ou LLM.
-
-## Memory Engine
-
-A arquitetura inicial do Memory Engine está em `backend/src/ecos/memory/` e define apenas modelos, interface de repositório e serviço de orquestração por abstração. Esta camada ainda não implementa PostgreSQL, pgvector, busca vetorial, embeddings ou LLM.
 
 ## Backend
 
