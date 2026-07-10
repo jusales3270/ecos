@@ -29,10 +29,6 @@ Este repositório contém o baseline inicial de organização e um backend FastA
 
 
 
-## Backend
-
-O backend inicial do ECOS usa Python 3.12, FastAPI, pydantic-settings, pytest, Ruff e uv para gerenciamento de dependências.
-
 ### Instalar dependências
 
 ```bash
