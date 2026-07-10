@@ -4,10 +4,10 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from ecos.config import Settings
 
 settings = Settings()
 app = FastAPI(title="ECOS Backend", version=settings.version)
+
 
 
 @app.get("/health")
@@ -18,3 +18,4 @@ def health() -> dict[str, Any]:
         "service": settings.service_name,
         "version": settings.version,
     }
+
