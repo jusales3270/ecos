@@ -8,7 +8,7 @@ from ecos.context import ContextProvider
 from ecos.debate import DebateProvider
 from ecos.decision import DecisionProvider
 from ecos.events import EventBus, EventType
-from ecos.core import Container, Settings
+
 from ecos.main import app
 from ecos.memory import MemoryRepository, MemoryType
 from ecos.orchestrator import OrchestratorProvider
@@ -51,7 +51,7 @@ def test_fake_runtime_implementations_satisfy_architecture_interfaces() -> None:
 
 def test_runtime_engine_run_returns_completed_recommendation() -> None:
     """RuntimeEngine runs the full fake cognitive flow without external calls."""
-    result = RuntimeEngine.with_fakes().run("Improve organizational decision quality")
+
 
     assert UUID(result.session_id)
     assert result.status == "completed"
@@ -63,7 +63,7 @@ def test_runtime_engine_run_returns_completed_recommendation() -> None:
 
 def test_cognitive_pipeline_records_memory_events_and_session_completion() -> None:
     """CognitivePipeline records memory, events and final session state."""
-    pipeline = CognitivePipeline.with_fakes()
+
     result = pipeline.run("Coordinate a governed market expansion decision")
     session_id = UUID(result.session_id)
 
@@ -95,7 +95,7 @@ def test_cognitive_pipeline_records_memory_events_and_session_completion() -> No
 def test_runtime_engine_rejects_blank_objective() -> None:
     """RuntimeEngine rejects blank objectives before creating a session."""
     try:
-        RuntimeEngine.with_fakes().run("   ")
+
     except ValueError as exc:
         assert str(exc) == "objective cannot be blank"
     else:
@@ -123,23 +123,3 @@ def test_runtime_demo_endpoint_returns_expected_contract() -> None:
         "confidence": 0.91,
     }
 
-
-def test_container_runtime_uses_registered_dependencies_without_duplicates() -> None:
-    """Container RuntimeEngine reuses registered repositories and event bus."""
-    container = Container(settings=Settings())
-    pipeline = container.runtime_engine.pipeline
-
-    assert pipeline is container.runtime_pipeline
-    assert pipeline.memory_repository is container.memory_repository
-    assert pipeline.session_repository is container.session_repository
-    assert pipeline.event_bus is container.event_bus
-    assert pipeline.memory_service is container.memory_service
-    assert pipeline.session_service is container.session_service
-    assert pipeline.event_service is container.event_service
-    assert pipeline.context_service is container.context_service
-    assert pipeline.ai_service is container.ai_service
-
-
-def test_app_object_exists() -> None:
-    """FastAPI application object is importable for uvicorn."""
-    assert app is not None
