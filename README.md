@@ -27,9 +27,6 @@ tests/     Testes automatizados e recursos de validação.
 Este repositório contém o baseline inicial de organização e um backend FastAPI mínimo com endpoint de health check.
 
 
-## Domínio
-
-O núcleo de domínio inicial está em `backend/src/ecos/domain/` e modela apenas entidades e enums com Pydantic v2. Esta camada ainda não implementa banco de dados, APIs, memória, LLMs ou lógica cognitiva.
 
 ## Backend
 
