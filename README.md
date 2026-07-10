@@ -27,6 +27,7 @@ tests/     Testes automatizados e recursos de validação.
 Este repositório contém o baseline inicial de organização e um backend FastAPI mínimo com endpoint de health check.
 
 
+
 ## Backend
 
 O backend inicial do ECOS usa Python 3.12, FastAPI, pydantic-settings, pytest, Ruff e uv para gerenciamento de dependências.
