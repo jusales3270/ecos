@@ -27,13 +27,7 @@ tests/     Testes automatizados e recursos de validação.
 Este repositório contém o baseline inicial de organização e um backend FastAPI mínimo com endpoint de health check.
 
 
-## Domínio
 
-O núcleo de domínio inicial está em `backend/src/ecos/domain/` e modela apenas entidades e enums com Pydantic v2. Esta camada ainda não implementa banco de dados, APIs, memória, LLMs ou lógica cognitiva.
-
-## Memory Engine
-
-A arquitetura inicial do Memory Engine está em `backend/src/ecos/memory/` e define apenas modelos, interface de repositório e serviço de orquestração por abstração. Esta camada ainda não implementa PostgreSQL, pgvector, busca vetorial, embeddings ou LLM.
 
 ## Backend
 
