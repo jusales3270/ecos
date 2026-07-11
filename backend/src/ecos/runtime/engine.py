@@ -18,7 +18,7 @@ from ecos.orchestrator import (
     ExecutionStep,
     OrchestratorService,
 )
-from ecos.planner import CognitivePlan, ExecutionStrategy, PlannerService
+from ecos.planner import CognitivePlan, ExecutionStrategy, PlannerInput, PlannerService
 from ecos.providers import AIProvider, AIService, ProviderRegistry, ProviderType
 from ecos.reasoning import ReasoningContext, ReasoningService, ReasoningType
 from ecos.runtime.fakes import (
@@ -166,7 +166,8 @@ class CognitivePipeline:
             execution.cognitive_session.objective,
         )
         execution.plan = plan
-        self._run_orchestrator(plan)
+        if plan.metadata.get("planner") != "deterministic":
+            self._run_orchestrator(plan)
 
         self._update_session_state(
             execution,
@@ -175,6 +176,9 @@ class CognitivePipeline:
             active_engine="context",
             progress=0.2,
         )
+        if not self._plan_has_engine(plan, "context"):
+            msg = "planned pipeline does not include context"
+            raise RuntimeError(msg)
         if isinstance(self.context_provider, FakeContextProvider):
             self.context_provider.configure(
                 session_id,
@@ -211,6 +215,9 @@ class CognitivePipeline:
                 {"confidence": context.confidence},
             )
 
+        if not self._plan_has_engine(plan, "reasoning"):
+            msg = "planned pipeline does not include reasoning"
+            raise RuntimeError(msg)
         self._update_session_state(
             execution,
             lifecycle_status=SessionLifecycleStatus.EXECUTING,
@@ -242,20 +249,33 @@ class CognitivePipeline:
             completed_payload,
         )
 
-        specialists = self.specialist_service.load()
-        contributions = [
-            self.specialist_service.contribute(
-                specialist.id,
-                {"objective": objective, "reasoning": reasoning.summary},
+        specialists = []
+        contributions = []
+        if self._plan_has_engine(plan, "specialists"):
+            planned_types = {
+                selection.specialist_type for selection in plan.selected_specialists
+            }
+            specialists = [
+                specialist
+                for specialist in self.specialist_service.load()
+                if not planned_types or specialist.type in planned_types
+            ]
+            contributions = [
+                self.specialist_service.contribute(
+                    specialist.id,
+                    {"objective": objective, "reasoning": reasoning.summary},
+                )
+                for specialist in specialists
+            ]
+            self._publish(
+                EventType.SPECIALIST_CONTRIBUTED,
+                session_id,
+                {"count": len(contributions)},
             )
-            for specialist in specialists
-        ]
-        self._publish(
-            EventType.SPECIALIST_CONTRIBUTED,
-            session_id,
-            {"count": len(contributions)},
-        )
 
+        if not self._plan_has_engine(plan, "debate"):
+            msg = "planned pipeline does not include debate"
+            raise RuntimeError(msg)
         self._update_session_state(
             execution,
             lifecycle_status=SessionLifecycleStatus.EXECUTING,
@@ -289,6 +309,9 @@ class CognitivePipeline:
             debate_payload,
         )
 
+        if not self._plan_has_engine(plan, "simulation"):
+            msg = "planned pipeline does not include simulation"
+            raise RuntimeError(msg)
         self._update_session_state(
             execution,
             lifecycle_status=SessionLifecycleStatus.EXECUTING,
@@ -334,6 +357,12 @@ class CognitivePipeline:
             },
         )
 
+        if not (
+            self._plan_has_engine(plan, "decision_support")
+            or self._plan_has_engine(plan, "decision")
+        ):
+            msg = "planned pipeline does not include decision support"
+            raise RuntimeError(msg)
         self._update_session_state(
             execution,
             lifecycle_status=SessionLifecycleStatus.EXECUTING,
@@ -486,6 +515,34 @@ class CognitivePipeline:
         objective: Objective,
     ) -> CognitivePlan:
         """Create a cognitive plan through the planner provider abstraction."""
+        try:
+            return self.planner_service.create_plan(
+                PlannerInput(
+                    session_id=session.id,
+                    organization_id=session.organization_id,
+                    objective=objective,
+                    description=objective.description,
+                    priority=objective.priority,
+                    desired_outcome="Produce a governed recommendation.",
+                    constraints=("No external calls", "No real AI providers"),
+                    policies=("human_approval_required",),
+                    resources_available=("runtime",),
+                    domains=("strategy", "risk"),
+                    context_available=True,
+                    context_gap_count=0,
+                    critical_context_gap_count=0,
+                    execution_requested=False,
+                    stakeholders_count=3,
+                    temporal_horizon="quarter",
+                    impact="high",
+                    reversible=True,
+                    metadata={"runtime": True},
+                    correlation_id=session.id,
+                )
+            )
+        except RuntimeError as error:
+            if "real cognitive planner is not configured" not in str(error):
+                raise
         planning_strategy = self.planner_service.classify_objective(objective)
         complexity = self.planner_service.estimate_complexity(objective)
         strategy = ExecutionStrategy(
@@ -519,6 +576,10 @@ class CognitivePipeline:
             estimated_cost=0.0,
             confidence_target=0.9,
         )
+
+    def _plan_has_engine(self, plan: CognitivePlan, engine: str) -> bool:
+        """Return whether a normalized engine is present in the plan."""
+        return engine in {selection.engine for selection in plan.selected_engines}
 
     def _run_orchestrator(self, plan: CognitivePlan) -> None:
         """Run the fake orchestrator provider over the planned pipeline."""

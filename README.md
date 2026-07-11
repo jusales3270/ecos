@@ -66,7 +66,11 @@ A arquitetura inicial do Orchestrator está em `backend/src/ecos/orchestrator/` 
 
 ## Cognitive Planner
 
-A arquitetura inicial do Cognitive Planner está em `backend/src/ecos/planner/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa IA, heurísticas, planejamento automático, OpenAI ou Anthropic.
+O Cognitive Planner real está em `backend/src/ecos/planner/` e planeja como o E.C.O.S. deverá pensar antes do Context Engine. Ele cria um `CognitivePlan` tipado, imutável e explicável com classificação do objetivo, complexidade, risco, estratégia cognitiva, Engines, especialistas, dependências, estimativas relativas, meta de confiança e requisitos de governança.
+
+O Planner usa somente regras determinísticas e dependências internas injetadas pelo Container: `SpecialistRegistry`, `EventService`, relógio e gerador de IDs. Ele não usa LLM, não importa OpenAI, não depende de `AIProvider`, não raciocina sobre o problema, não recomenda, não decide, não executa Engines e não altera memória ou políticas. Execução, quando solicitada, aparece apenas como estágio condicional bloqueado até governança e aprovação humana.
+
+As estimativas são provider-agnostic; `estimated_cost_units` é custo relativo, não preço monetário. O Orchestrator definitivo consumirá integralmente o plano em sprint futura. Nunca versione segredos.
 
 ## Decision Support Engine
 

@@ -1,11 +1,14 @@
 """Service layer for the ECOS Cognitive Planner architecture."""
 
 from ecos.domain import Objective
+from ecos.planner.engine import CognitivePlanner
 from ecos.planner.models import (
+    CognitivePlan,
     ComplexityLevel,
     EngineSelection,
     ExecutionStrategy,
     Pipeline,
+    PlannerInput,
     PlanningStrategy,
     SpecialistSelection,
 )
@@ -15,9 +18,21 @@ from ecos.planner.provider import PlannerProvider
 class PlannerService:
     """Coordinates cognitive planning through a provider abstraction only."""
 
-    def __init__(self, provider: PlannerProvider) -> None:
+    def __init__(
+        self,
+        provider: PlannerProvider,
+        planner: CognitivePlanner | None = None,
+    ) -> None:
         """Initialize the service with a planner provider abstraction."""
         self._provider = provider
+        self._planner = planner
+
+    def create_plan(self, planner_input: PlannerInput) -> CognitivePlan:
+        """Create a cognitive plan through the real planner implementation."""
+        if self._planner is None:
+            msg = "real cognitive planner is not configured"
+            raise RuntimeError(msg)
+        return self._planner.create_plan(planner_input)
 
     def classify_objective(self, objective: Objective) -> PlanningStrategy:
         """Classify an objective through the provider abstraction."""

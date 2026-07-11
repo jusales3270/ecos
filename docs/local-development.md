@@ -45,6 +45,12 @@ O fluxo demo preserva o mesmo resultado público e usa providers cognitivos Fake
 
 Com `ECOS_MEMORY_REPOSITORY=fake`, o Container mantém `FakeContextProvider` para o runtime demo. Com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta o Context Engine real, que constrói contexto somente a partir da requisição da sessão e da memória organizacional escopada por `organization_id`. O Context Engine não usa LLM, OpenAI, embeddings, pgvector, busca web ou Knowledge Graph; ele calcula relevância, confiança e completude de forma determinística e mantém lacunas explícitas em `missing_context`.
 
+## Cognitive Planner local
+
+O Container registra o `CognitivePlanner` real por padrão e injeta `SpecialistRegistry`, `EventService`, relógio UTC e gerador de identificadores. O Planner roda antes do Context Engine, emite eventos seguros de planejamento e gera um `CognitivePlan` determinístico com Engines, especialistas, dependências acíclicas, governança, aprovação humana requerida quando necessário, estimativas relativas e `confidence_target`.
+
+O Planner não usa OpenAI, `AIProvider`, variáveis de ambiente, PostgreSQL ou Container internamente. Ele não raciocina, não recomenda, não decide e não executa ações. O runtime demo preserva o mesmo resultado público; o Orchestrator definitivo consumirá o plano completo em sprint futura.
+
 ## Provider OpenAI opcional
 
 O provider de IA padrão é `fake`, portanto a instalação e a suíte padrão não precisam de credenciais nem fazem chamadas externas. Para selecionar o adaptador OpenAI no Container:

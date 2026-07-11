@@ -144,6 +144,61 @@ class ContextDependencyUnavailableError(ContextEngineError):
         )
 
 
+class PlannerError(EcosError):
+    """Base error raised by the deterministic Cognitive Planner."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "PLANNER_ERROR",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message=message, code=code, details=details or {})
+
+
+class PlannerMissingOrganizationError(PlannerError):
+    """Raised when planning input has no organization scope."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "organization_id is required to create a cognitive plan.",
+            "PLANNER_MISSING_ORGANIZATION",
+        )
+
+
+class PlannerInvalidObjectiveError(PlannerError):
+    """Raised when planning input has no usable objective."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "objective is required to create a cognitive plan.",
+            "PLANNER_INVALID_OBJECTIVE",
+        )
+
+
+class PlannerValidationError(PlannerError):
+    """Raised when a generated plan violates planner invariants."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "PLANNER_VALIDATION_ERROR",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message=message, code=code, details=details or {})
+
+
+class PlannerDependencyUnavailableError(PlannerError):
+    """Raised when an injected planner dependency is unavailable."""
+
+    def __init__(self, dependency: str) -> None:
+        super().__init__(
+            "planner dependency is unavailable.",
+            "PLANNER_DEPENDENCY_UNAVAILABLE",
+            {"dependency": dependency},
+        )
+
+
 class AIProviderError(EcosError):
     """Base error raised by an external AI provider adapter."""
 
