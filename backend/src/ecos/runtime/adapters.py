@@ -28,8 +28,18 @@ from ecos.governance import (
     GovernanceResultStatus,
     ImpactLevel,
 )
-from ecos.learning import LearningObject, LearningService
-from ecos.memory import MemoryType
+from ecos.learning import LearningRequest, LearningService
+from ecos.observation import (
+    ComparisonOperator,
+    ExpectedOutcome,
+    Measurement,
+    MeasurementSource,
+    MeasurementValueType,
+    ObservationEngine,
+    ObservationRequest,
+    ObservationSourceType,
+    ObservationWindow,
+)
 from ecos.orchestrator import (
     EngineExecutor,
     EngineInvocationContext,
@@ -265,32 +275,110 @@ class DecisionExecutor(RuntimeEngineExecutor):
 
 
 class LearningExecutor(RuntimeEngineExecutor):
-    """Run LearningService without allowing the Orchestrator to write memory."""
+    """Run LearningService without allowing the Orchestrator to create candidates."""
 
-    def __init__(self, service: LearningService, engine_type: str = "memory") -> None:
+    def __init__(self, service: LearningService, engine_type: str = "learning") -> None:
         super().__init__(engine_type)
         self._service = service
 
     def _execute(self, context: EngineInvocationContext) -> Any:
-        decision_package = context.accumulated_context.get(
-            "decision"
-        ) or context.accumulated_context.get("decision_support")
-        if decision_package is None:
-            raise RuntimeError("decision output is required before learning")
-        reasoning = _require(context.accumulated_context, "reasoning")
-        debate = _require(context.accumulated_context, "debate")
-        recommendation = decision_package.recommendation
-        return self._service.learn(
-            LearningObject(
-                session_id=context.session.session.id,
-                memory_type=MemoryType.EPISODIC,
-                title="Runtime cognitive pipeline completed",
-                description=recommendation.summary,
-                evidence=[reasoning.summary, *debate.recommendations],
-                tags=["runtime", "demo", "cognitive-pipeline"],
-                confidence=recommendation.confidence,
-                origin="runtime",
+        observation = _require(context.accumulated_context, "observation")
+        decision_package = context.accumulated_context.get("decision") or (
+            context.accumulated_context.get("decision_support")
+        )
+        return self._service.process(
+            LearningRequest(
+                learning_request_id=context.stage.stage_id,
                 organization_id=context.session.session.organization_id,
+                session_id=context.session.session.id,
+                plan_id=context.plan.plan_id,
+                correlation_id=context.correlation_id,
+                observation_result=observation,
+                decision_package=decision_package,
+                recommendation=getattr(decision_package, "recommendation", None),
+                execution_result=context.accumulated_context.get("execution"),
+                simulation_result=context.accumulated_context.get("simulation"),
+                debate_report=context.accumulated_context.get("debate"),
+                user_feedback=tuple(observation.feedback),
+                applicable_policies=tuple(
+                    context.plan.governance_requirements.policy_checks
+                ),
+                human_review_state=None,
+                safe_metadata={"adapter": type(self).__name__},
+            )
+        )
+
+
+class ObservationExecutor(RuntimeEngineExecutor):
+    """Run the real ObservationEngine from accumulated stage outputs."""
+
+    def __init__(self, engine: ObservationEngine) -> None:
+        super().__init__("observation")
+        self._engine = engine
+
+    def _execute(self, context: EngineInvocationContext) -> Any:
+        decision_package = context.accumulated_context.get("decision") or (
+            context.accumulated_context.get("decision_support")
+        )
+        execution_result = context.accumulated_context.get("execution")
+        recommendation = getattr(decision_package, "recommendation", None)
+        confidence = float(getattr(recommendation, "confidence", 0.0))
+        source = MeasurementSource(
+            source_type=ObservationSourceType.DECISION_OUTCOME,
+            source_id=f"decision:{context.stage.stage_id}",
+            reliability=1.0,
+            verified=True,
+        )
+        measurement = Measurement(
+            measurement_id=f"measurement:{context.stage.stage_id}:confidence",
+            metric_key="recommendation_confidence",
+            value=confidence,
+            value_type=MeasurementValueType.SCORE,
+            source=source,
+            observed_at=_now(),
+            evidence_references=(f"decision:{context.stage.stage_id}",),
+            confidence=confidence,
+            verified=True,
+            reason_codes=("runtime_decision_output",),
+        )
+        expected = ExpectedOutcome(
+            expected_outcome_id=f"expected:{context.stage.stage_id}:confidence",
+            name="Recommendation confidence meets plan target",
+            description=(
+                "Compares declared plan target with observed recommendation confidence."
+            ),
+            metric_key="recommendation_confidence",
+            expected_value=context.plan.confidence_target,
+            comparison_operator=ComparisonOperator.GREATER_THAN_OR_EQUAL,
+            tolerance=0.0,
+            weight=1.0,
+            required=True,
+            source_reference=f"plan:{context.plan.plan_id}",
+            reason_codes=("plan_confidence_target",),
+        )
+        return self._engine.observe(
+            ObservationRequest(
+                observation_request_id=context.stage.stage_id,
+                organization_id=context.session.session.organization_id,
+                session_id=context.session.session.id,
+                plan_id=context.plan.plan_id,
+                correlation_id=context.correlation_id,
+                source_type=ObservationSourceType.DECISION_OUTCOME,
+                source_id=f"stage:{context.stage.stage_id}",
+                execution_result=execution_result,
+                decision_package=decision_package,
+                recommendation=recommendation,
+                expected_outcomes=(expected,),
+                observed_measurements=(measurement,),
+                observation_window=ObservationWindow(
+                    started_at=context.session.state.updated_at,
+                    ended_at=_now(),
+                ),
+                affected_domains=tuple(context.safe_metadata.keys()),
+                policy_references=tuple(
+                    context.plan.governance_requirements.policy_checks
+                ),
+                safe_metadata={"adapter": type(self).__name__},
             )
         )
 

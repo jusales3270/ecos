@@ -139,9 +139,17 @@ Relevância, confiança e completude são calculadas de forma determinística e 
 
 O Memory Engine preserva o contrato `MemoryRepository` e oferece persistência em PostgreSQL via SQLAlchemy 2 e asyncpg. O fake continua como padrão; defina `ECOS_MEMORY_REPOSITORY=postgres` para persistência permanente e para ativar o Context Engine real no Container. Memórias podem carregar `organization_id`; o Context Engine exige esse escopo para recuperar contexto sem vazamento entre organizações. Este estágio não implementa pgvector, busca vetorial, embeddings ou LLM.
 
+## Observation Engine
+
+O Observation Engine em `backend/src/ecos/observation/` mede resultados organizacionais declarados, comparando expectativas explícitas com medições, evidências e feedback fornecidos por providers injetados. Ausência de dados não equivale a sucesso; `completed` da observação significa processamento concluído, não outcome organizacional bem-sucedido. Ele não infere causalidade, não gera recomendação, não altera execução, plano ou decisão, não acessa Container, variáveis de ambiente, PostgreSQL, SQLAlchemy, OpenAI, `AIProvider` ou sistemas externos.
+
+Os providers padrão são determinísticos e em memória. Esta sprint não integra fonte externa real, polling, jobs em background, dashboards, alertas, tracing distribuído ou observabilidade técnica persistente da plataforma; esse escopo pertence ao Sprint 17D.
+
 ## Learning Engine
 
-O Learning Engine em `backend/src/ecos/learning/` é a fronteira obrigatória para criação ou atualização permanente de memória organizacional. Ele aplica uma política determinística (evidência presente e confiança mínima de `0.5`), preserva origem, evidência, confiança e sessão, publica os eventos de aprendizado existentes e só então entrega aprendizados aprovados ao Memory Engine. O runtime e os demais motores não gravam memória diretamente.
+O Learning Engine em `backend/src/ecos/learning/` é a fronteira obrigatória para criação ou atualização permanente de memória organizacional. Ele transforma `ObservationResult` validado em candidatos estruturados, calibra confiança por proposta versionada e só entrega conhecimento validado ao Memory Engine. Uma ocorrência não equivale a padrão; padrões exigem recorrência no histórico injetado. Aprendizagem estratégica, crítica ou sem aceitação explícita suficiente exige revisão humana.
+
+Learning não explica causa sem evidência declarada, não sobrescreve confiança histórica, não apaga memória, não reescreve fatos e não reduz governança. Memória é evolutiva e não destrutiva: atualizações preservam origem, evidência, versão e proveniência. Nenhum LLM, embeddings, migration, banco novo ou chamada externa foi adicionado.
 
 ## Backend
 

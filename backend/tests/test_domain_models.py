@@ -188,6 +188,7 @@ def test_session_status_and_stage_are_coherent() -> None:
         SessionStatus.RECOMMENDATION,
         SessionStatus.APPROVAL,
         SessionStatus.EXECUTION,
+        SessionStatus.OBSERVATION,
         SessionStatus.LEARNING,
     }
 

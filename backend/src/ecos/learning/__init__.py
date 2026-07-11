@@ -1,6 +1,58 @@
 """Learning Engine public API."""
 
-from .models import LearningObject, LearningValidationStatus
-from .service import LearningService
+from .models import (
+    CalibrationDirection,
+    ConfidenceCalibration,
+    LearningCandidate,
+    LearningCategory,
+    LearningEvidence,
+    LearningFailure,
+    LearningObject,
+    LearningRequest,
+    LearningResult,
+    LearningSource,
+    LearningStatus,
+    LearningValidation,
+    LearningValidationOutcome,
+    LearningValidationStatus,
+    MemoryUpdateProposal,
+    PatternSignal,
+    RelationshipType,
+)
+from .provider import (
+    DefaultLearningPolicyProvider,
+    InMemoryLearningHistoryProvider,
+    InMemoryLearningIdempotencyProvider,
+    LearningHistoryProvider,
+    LearningIdempotencyProvider,
+    LearningPolicyProvider,
+)
+from .service import LearningConfig, LearningService
 
-__all__ = ["LearningObject", "LearningService", "LearningValidationStatus"]
+__all__ = [
+    "CalibrationDirection",
+    "ConfidenceCalibration",
+    "DefaultLearningPolicyProvider",
+    "InMemoryLearningHistoryProvider",
+    "InMemoryLearningIdempotencyProvider",
+    "LearningCandidate",
+    "LearningCategory",
+    "LearningConfig",
+    "LearningEvidence",
+    "LearningFailure",
+    "LearningHistoryProvider",
+    "LearningIdempotencyProvider",
+    "LearningObject",
+    "LearningPolicyProvider",
+    "LearningRequest",
+    "LearningResult",
+    "LearningService",
+    "LearningSource",
+    "LearningStatus",
+    "LearningValidation",
+    "LearningValidationOutcome",
+    "LearningValidationStatus",
+    "MemoryUpdateProposal",
+    "PatternSignal",
+    "RelationshipType",
+]

@@ -1076,6 +1076,7 @@ class Orchestrator:
             "decision_support": SessionStage.RECOMMENDATION,
             "governance": SessionStage.APPROVAL,
             "execution": SessionStage.EXECUTION,
+            "observation": SessionStage.OBSERVATION,
             "learning": SessionStage.LEARNING,
             "memory": SessionStage.LEARNING,
         }.get(engine, SessionStage.CONTEXT)

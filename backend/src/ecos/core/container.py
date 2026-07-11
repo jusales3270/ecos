@@ -30,6 +30,13 @@ from ecos.governance import (
 )
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
+from ecos.observation import (
+    InMemoryFeedbackProvider,
+    InMemoryMeasurementProvider,
+    InMemoryObservationIdempotencyProvider,
+    ObservationConfig,
+    ObservationEngine,
+)
 from ecos.orchestrator import (
     OrchestrationConfig,
     OrchestrationMode,
@@ -69,7 +76,7 @@ from ecos.runtime.adapters import (
     ExecutionExecutor,
     GovernanceExecutor,
     LearningExecutor,
-    NoopExecutor,
+    ObservationExecutor,
     ReasoningExecutor,
     SimulationExecutor,
     SpecialistsExecutor,
@@ -147,6 +154,15 @@ class Container:
         else:
             self.context_provider = FakeContextProvider(organization.id, objective)
         self.learning_service = LearningService(self.memory_service, self.event_service)
+        self.observation_engine = ObservationEngine(
+            measurement_provider=InMemoryMeasurementProvider(),
+            feedback_provider=InMemoryFeedbackProvider(),
+            idempotency_provider=InMemoryObservationIdempotencyProvider(),
+            event_service=self.event_service,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            config=ObservationConfig(),
+        )
         self.session_service = SessionService(self.session_repository)
         self.context_service = ContextService(self.context_provider)
         self.specialist_registry = SpecialistRegistry()
@@ -261,14 +277,14 @@ class Container:
                 self.decision_service,
                 engine_type="decision_support",
             ),
-            "memory": LearningExecutor(self.learning_service),
+            "memory": LearningExecutor(self.learning_service, engine_type="memory"),
             "learning": LearningExecutor(
                 self.learning_service,
                 engine_type="learning",
             ),
             "governance": GovernanceExecutor(self.governance_engine),
             "execution": ExecutionExecutor(self.execution_engine),
-            "observation": NoopExecutor("observation"),
+            "observation": ObservationExecutor(self.observation_engine),
         }
         self.orchestrator = Orchestrator(
             executors=self.engine_executors,
