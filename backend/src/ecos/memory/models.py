@@ -58,6 +58,10 @@ class MemoryModel(BaseModel):
 class MemoryObject(MemoryModel):
     """A unit of memory metadata managed by the Memory Engine."""
 
+    organization_id: UUID | None = Field(
+        default=None,
+        description="Organization that owns the memory object.",
+    )
     type: MemoryType = Field(description="Memory category.")
     title: str = Field(
         min_length=1,

@@ -24,8 +24,10 @@ class MemoryRepository(ABC):
         self,
         query: str,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """Search memory objects using repository-specific criteria."""
         raise NotImplementedError
@@ -44,8 +46,10 @@ class MemoryRepository(ABC):
     def list(
         self,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """List memory objects using repository-specific filters."""
         raise NotImplementedError

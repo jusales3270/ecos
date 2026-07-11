@@ -24,6 +24,7 @@ class LearningObject(BaseModel):
 
     id: UUID = Field(default_factory=uuid4)
     session_id: UUID
+    organization_id: UUID | None = None
     memory_type: MemoryType
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=2000)

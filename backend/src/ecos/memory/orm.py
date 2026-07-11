@@ -17,6 +17,9 @@ class MemoryRecord(Base):
     __tablename__ = "memories"
 
     id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    organization_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), index=True
+    )
     type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)

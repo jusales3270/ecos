@@ -43,6 +43,8 @@ curl -X POST http://127.0.0.1:8000/runtime/demo \
 
 O fluxo demo preserva o mesmo resultado público e usa providers cognitivos Fake e, por padrão, repositórios em memória. O resultado cognitivo passa pelo Learning Engine antes de virar memória.
 
+Com `ECOS_MEMORY_REPOSITORY=fake`, o Container mantém `FakeContextProvider` para o runtime demo. Com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta o Context Engine real, que constrói contexto somente a partir da requisição da sessão e da memória organizacional escopada por `organization_id`. O Context Engine não usa LLM, OpenAI, embeddings, pgvector, busca web ou Knowledge Graph; ele calcula relevância, confiança e completude de forma determinística e mantém lacunas explícitas em `missing_context`.
+
 ## Provider OpenAI opcional
 
 O provider de IA padrão é `fake`, portanto a instalação e a suíte padrão não precisam de credenciais nem fazem chamadas externas. Para selecionar o adaptador OpenAI no Container:
@@ -93,7 +95,7 @@ uv run alembic upgrade head
 uv run uvicorn ecos.main:app --reload
 ```
 
-`ECOS_SESSION_REPOSITORY` e `ECOS_MEMORY_REPOSITORY` podem ser configurados independentemente como `fake` ou `postgres`; ambos usam `fake` por padrão.
+`ECOS_SESSION_REPOSITORY` e `ECOS_MEMORY_REPOSITORY` podem ser configurados independentemente como `fake` ou `postgres`; ambos usam `fake` por padrão. Quando memória PostgreSQL está ativa, cada consulta de contexto é restrita ao `organization_id`; falhas de memória e retornos de outra organização são erros explícitos, sem fallback silencioso.
 
 Para reverter todas as migrations:
 
@@ -109,4 +111,4 @@ cd backend
 ECOS_TEST_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos uv run pytest
 ```
 
-Esse comando habilita os testes condicionais dos repositórios PostgreSQL de sessões e memórias. A migration `20260711_02` cria `memories` após a migration de sessões; ela pode ser validada isoladamente com `alembic downgrade 20260711_01` e `alembic upgrade head`.
+Esse comando habilita os testes condicionais dos repositórios PostgreSQL de sessões e memórias. A migration `20260711_02` cria `memories` após a migration de sessões, e `20260711_03` adiciona o índice de escopo organizacional para memórias; elas podem ser validadas com `alembic downgrade base` e `alembic upgrade head`.

@@ -62,10 +62,20 @@ class PostgresMemoryRepository(MemoryRepository):
         self,
         query: str,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
-        return _run(self._list(memory_type=memory_type, tags=tags, query=query))
+        return _run(
+            self._list(
+                organization_id=organization_id,
+                memory_type=memory_type,
+                tags=tags,
+                query=query,
+                limit=limit,
+            )
+        )
 
     def update(self, memory: MemoryObject) -> MemoryObject:
         return _run(self._update(memory))
@@ -76,6 +86,7 @@ class PostgresMemoryRepository(MemoryRepository):
             if record is None:
                 raise KeyError(memory.id)
             for name in (
+                "organization_id",
                 "type",
                 "title",
                 "description",
@@ -107,19 +118,32 @@ class PostgresMemoryRepository(MemoryRepository):
     def list(
         self,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
-        return _run(self._list(memory_type=memory_type, tags=tags))
+        return _run(
+            self._list(
+                organization_id=organization_id,
+                memory_type=memory_type,
+                tags=tags,
+                limit=limit,
+            )
+        )
 
     async def _list(
         self,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None,
         tags: list[str] | None,
         query: str | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         statement = select(MemoryRecord)
+        if organization_id is not None:
+            statement = statement.where(MemoryRecord.organization_id == organization_id)
         if memory_type is not None:
             statement = statement.where(MemoryRecord.type == memory_type.value)
         if tags is not None:
@@ -133,6 +157,8 @@ class PostgresMemoryRepository(MemoryRepository):
                 )
             )
         statement = statement.order_by(MemoryRecord.created_at, MemoryRecord.id)
+        if limit is not None:
+            statement = statement.limit(limit)
         async with self._session_factory() as database:
             records = (await database.scalars(statement)).all()
         return [self._model(record) for record in records]
@@ -148,6 +174,7 @@ class PostgresMemoryRepository(MemoryRepository):
         return MemoryObject.model_validate(
             {
                 "id": record.id,
+                "organization_id": record.organization_id,
                 "type": record.type,
                 "title": record.title,
                 "description": record.description,

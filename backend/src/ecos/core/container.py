@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from ecos.context import ContextService
+from ecos.context import ContextEngine, ContextService
 from ecos.core.exceptions import ConfigurationError
 from ecos.core.settings import Settings
 from ecos.debate import AIDebateEngine, DebateService
@@ -72,7 +72,6 @@ class Container:
             )
         else:
             self.session_repository = FakeSessionRepository()
-        self.context_provider = FakeContextProvider(organization.id, objective)
         self.planner_provider = FakePlannerProvider()
         self.specialist_provider = FakeSpecialistProvider()
         self.decision_provider = FakeDecisionProvider()
@@ -99,6 +98,13 @@ class Container:
 
         self.memory_service = MemoryService(self.memory_repository)
         self.event_service = EventService(self.event_bus)
+        if self.settings.memory_repository == "postgres":
+            self.context_provider = ContextEngine(
+                self.memory_repository,
+                event_service=self.event_service,
+            )
+        else:
+            self.context_provider = FakeContextProvider(organization.id, objective)
         self.learning_service = LearningService(self.memory_service, self.event_service)
         self.session_service = SessionService(self.session_repository)
         self.context_service = ContextService(self.context_provider)

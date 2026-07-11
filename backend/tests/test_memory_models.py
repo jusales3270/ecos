@@ -179,11 +179,19 @@ class NotImplementedMemoryRepository(MemoryRepository):
         self,
         query: str,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """Delegate to the interface method."""
-        return super().search(query, memory_type=memory_type, tags=tags)
+        return super().search(
+            query,
+            organization_id=organization_id,
+            memory_type=memory_type,
+            tags=tags,
+            limit=limit,
+        )
 
     def update(self, memory: MemoryObject) -> MemoryObject:
         """Delegate to the interface method."""
@@ -196,11 +204,18 @@ class NotImplementedMemoryRepository(MemoryRepository):
     def list(
         self,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """Delegate to the interface method."""
-        return super().list(memory_type=memory_type, tags=tags)
+        return super().list(
+            organization_id=organization_id,
+            memory_type=memory_type,
+            tags=tags,
+            limit=limit,
+        )
 
 
 def test_memory_repository_interface_methods_raise_not_implemented() -> None:
@@ -242,12 +257,19 @@ class InMemoryTestRepository(MemoryRepository):
         self,
         query: str,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """Return memories matching basic test-double filters."""
         del query
-        return self.list(memory_type=memory_type, tags=tags)
+        return self.list(
+            organization_id=organization_id,
+            memory_type=memory_type,
+            tags=tags,
+            limit=limit,
+        )
 
     def update(self, memory: MemoryObject) -> MemoryObject:
         """Update a memory object in the test double."""
@@ -261,17 +283,27 @@ class InMemoryTestRepository(MemoryRepository):
     def list(
         self,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """List memory objects from the test double."""
         memories = list(self.items.values())
+        if organization_id is not None:
+            memories = [
+                memory
+                for memory in memories
+                if memory.organization_id == organization_id
+            ]
         if memory_type is not None:
             memories = [memory for memory in memories if memory.type == memory_type]
         if tags is not None:
             memories = [
                 memory for memory in memories if set(tags).issubset(set(memory.tags))
             ]
+        if limit is not None:
+            memories = memories[:limit]
         return memories
 
 

@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from ecos.context import ContextService
+from ecos.context import ContextBuildRequest, ContextProvider, ContextService
 from ecos.debate import Debate, DebateService
 from ecos.decision import DecisionContext, DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
@@ -60,7 +60,7 @@ class CognitivePipeline:
         memory_repository: MemoryRepository,
         session_repository: SessionRepository,
         event_bus: EventBus,
-        context_provider: FakeContextProvider,
+        context_provider: ContextProvider,
         ai_provider: AIProvider,
         memory_service: MemoryService,
         learning_service: LearningService,
@@ -175,20 +175,41 @@ class CognitivePipeline:
             active_engine="context",
             progress=0.2,
         )
-        self.context_provider.configure(
-            session_id,
-            execution.cognitive_session.objective,
-        )
-        context = self.context_service.build()
+        if isinstance(self.context_provider, FakeContextProvider):
+            self.context_provider.configure(
+                session_id,
+                execution.cognitive_session.objective,
+            )
+            context = self.context_service.build()
+        else:
+            context_request = ContextBuildRequest(
+                session_id=session_id,
+                organization_id=execution.cognitive_session.organization_id,
+                objective=execution.cognitive_session.objective,
+                user_information=[
+                    execution.cognitive_session.objective.description or ""
+                ]
+                if execution.cognitive_session.objective.description
+                else [],
+                constraints=list(plan.strategy.constraints),
+                policies=[],
+                resources=[step.engine for step in plan.pipeline.steps],
+                external_signals=[],
+                relevant_entities=[execution.cognitive_session.objective.title],
+                required_context_fields=["objective", "memory"],
+                correlation_id=session_id,
+            )
+            context = self.context_service.build(context_request)
         if not self.context_service.validate(context):
             msg = "runtime context validation failed"
             raise RuntimeError(msg)
         execution.context = context
-        self._publish(
-            EventType.CONTEXT_CREATED,
-            session_id,
-            {"confidence": context.confidence},
-        )
+        if isinstance(self.context_provider, FakeContextProvider):
+            self._publish(
+                EventType.CONTEXT_CREATED,
+                session_id,
+                {"confidence": context.confidence},
+            )
 
         self._update_session_state(
             execution,
@@ -201,6 +222,10 @@ class CognitivePipeline:
             session_id=session_id,
             context=context,
             reasoning_type=ReasoningType.STRATEGIC,
+            constraints=list(context.constraints),
+            memory=[
+                str(reference.memory_id) for reference in context.memory_references
+            ],
         )
         self._publish(
             EventType.REASONING_STARTED,
@@ -281,9 +306,7 @@ class CognitivePipeline:
                 for element in context.elements
                 if element.source_type.value == "POLICY"
             ],
-            memory=[
-                item.model_dump(mode="json") for item in self.memory_service.list()
-            ],
+            memory=[item.model_dump(mode="json") for item in context.memory_references],
             reasoning_report=reasoning,
             debate_report=debate_result,
             external_signals=[
@@ -328,9 +351,7 @@ class CognitivePipeline:
                 for element in context.elements
                 if element.source_type.value == "POLICY"
             ],
-            memory=[
-                item.model_dump(mode="json") for item in self.memory_service.list()
-            ],
+            memory=[item.model_dump(mode="json") for item in context.memory_references],
             reasoning_report=reasoning,
             debate_report=debate_result,
             simulation_report=simulation,
@@ -373,6 +394,7 @@ class CognitivePipeline:
                 tags=["runtime", "demo", "cognitive-pipeline"],
                 confidence=recommendation.confidence,
                 origin="runtime",
+                organization_id=execution.cognitive_session.organization_id,
             )
         )
         if memory is None:

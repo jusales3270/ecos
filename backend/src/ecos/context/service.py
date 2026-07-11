@@ -1,6 +1,6 @@
 """Service layer for the ECOS Context Engine architecture."""
 
-from ecos.context.models import ContextObject
+from ecos.context.models import ContextBuildRequest, ContextObject
 from ecos.context.provider import ContextProvider
 
 
@@ -11,9 +11,9 @@ class ContextService:
         """Initialize the service with a context provider abstraction."""
         self._provider = provider
 
-    def build(self) -> ContextObject:
+    def build(self, request: ContextBuildRequest | None = None) -> ContextObject:
         """Build context through the provider abstraction."""
-        return self._provider.build()
+        return self._provider.build(request)
 
     def expand(self, context: ContextObject) -> ContextObject:
         """Expand context through the provider abstraction."""

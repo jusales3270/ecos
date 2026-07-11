@@ -2,14 +2,14 @@
 
 from abc import ABC, abstractmethod
 
-from ecos.context.models import ContextObject
+from ecos.context.models import ContextBuildRequest, ContextObject
 
 
 class ContextProvider(ABC):
     """Abstract provider interface for context assembly operations."""
 
     @abstractmethod
-    def build(self) -> ContextObject:
+    def build(self, request: ContextBuildRequest | None = None) -> ContextObject:
         """Build an initial context object."""
         raise NotImplementedError
 
