@@ -77,6 +77,8 @@ def test_event_type_values() -> None:
         "RECOMMENDATION_CREATED",
         "EXECUTION_STARTED",
         "EXECUTION_COMPLETED",
+        "LEARNING_STARTED",
+        "LEARNING_VALIDATED",
         "LEARNING_COMPLETED",
     }
 

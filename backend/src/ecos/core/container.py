@@ -9,7 +9,8 @@ from ecos.debate import DebateService
 from ecos.decision import DecisionService
 from ecos.domain import Objective, Organization
 from ecos.events import EventService
-from ecos.memory import MemoryService
+from ecos.learning import LearningService
+from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
 from ecos.orchestrator import OrchestratorService
 from ecos.planner import PlannerService
 from ecos.providers import AIService, ProviderRegistry, ProviderStatus, ProviderType
@@ -46,7 +47,13 @@ class Container:
             organization_id=organization.id,
             title="Container runtime objective",
         )
-        self.memory_repository = FakeMemoryRepository()
+        self.memory_repository: MemoryRepository
+        if self.settings.memory_repository == "postgres":
+            self.memory_repository = PostgresMemoryRepository(
+                self.settings.database_url
+            )
+        else:
+            self.memory_repository = FakeMemoryRepository()
         self.event_bus = FakeEventBus()
         self.session_repository: SessionRepository
         if self.settings.session_repository == "postgres":
@@ -66,6 +73,7 @@ class Container:
 
         self.memory_service = MemoryService(self.memory_repository)
         self.event_service = EventService(self.event_bus)
+        self.learning_service = LearningService(self.memory_service, self.event_service)
         self.session_service = SessionService(self.session_repository)
         self.context_service = ContextService(self.context_provider)
         self.planner_service = PlannerService(self.planner_provider)
@@ -86,6 +94,7 @@ class Container:
             context_provider=self.context_provider,
             ai_provider=self.ai_provider,
             memory_service=self.memory_service,
+            learning_service=self.learning_service,
             session_service=self.session_service,
             event_service=self.event_service,
             context_service=self.context_service,

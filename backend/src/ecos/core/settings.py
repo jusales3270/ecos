@@ -31,6 +31,10 @@ class Settings(BaseSettings):
         default="fake",
         description="Session repository implementation used by the application.",
     )
+    memory_repository: Literal["fake", "postgres"] = Field(
+        default="fake",
+        description="Memory repository implementation used by the application.",
+    )
 
     @field_validator("database_url")
     @classmethod
