@@ -85,6 +85,16 @@ Idempotência é em memória e usa fingerprint criptográfico determinístico so
 
 Artifacts são referências tipadas, não binários no resultado. Métricas, logs seguros e timeline são produzidos no `ExecutionResult`, ainda sem persistência. `/runtime/demo` permanece sem etapa externa de Execution e mantém exatamente o contrato público existente.
 
+## Observation e Learning locais
+
+O Container registra `ObservationEngine` real com `InMemoryMeasurementProvider`, `InMemoryFeedbackProvider`, idempotência em memória, `EventService`, relógio UTC e gerador de IDs injetados. Observation mede fatos organizacionais fornecidos ao request: compara `ExpectedOutcome` com `Measurement`, calcula desvios, anomalias determinísticas, quality e score normalizado. Ausência de métrica obrigatória gera `inconclusive` ou falha de expectativa, nunca sucesso artificial.
+
+Observabilidade técnica persistente da plataforma, tracing distribuído, dashboards, alertas, coleta de infraestrutura e polling ficam fora desta sprint e pertencem ao Sprint 17D. Nenhum ERP, CRM, API externa, navegador, MCP, LLM, embedding, migration ou PostgreSQL obrigatório foi adicionado.
+
+O `LearningService` existente foi preservado e estendido para receber `ObservationResult` por contrato. Ele cria `LearningCandidate` somente a partir de fatos observados, preserva correlação como correlação, exige evidência e qualidade mínimas, aplica política de revisão humana, detecta padrões apenas com recorrência configurada e grava no Memory Engine apenas propostas validadas. Confiança é calibrada por proposta; não há sobrescrita histórica.
+
+O Runtime continua delegando ao Orchestrator. O plano demo executa Observation antes de Learning, não inventa feedback nem memória falsa, e `/runtime/demo` continua retornando `status="completed"`, `recommendation="Proceed using ECOS context, reasoning, debate and governance."` e `confidence=0.91`.
+
 ## Provider OpenAI opcional
 
 O provider de IA padrão é `fake`, portanto a instalação e a suíte padrão não precisam de credenciais nem fazem chamadas externas. Para selecionar o adaptador OpenAI no Container:

@@ -261,7 +261,8 @@ class FakePlannerProvider(PlannerProvider):
                 engine="governance",
                 reason="Validate governed continuation.",
             ),
-            EngineSelection(engine="memory", reason="Record execution memory."),
+            EngineSelection(engine="observation", reason="Observe declared outcomes."),
+            EngineSelection(engine="learning", reason="Validate reusable learning."),
         ]
 
     def select_specialists(

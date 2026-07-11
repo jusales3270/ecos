@@ -27,6 +27,13 @@ from ecos.governance import (
 )
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService
+from ecos.observation import (
+    InMemoryFeedbackProvider,
+    InMemoryMeasurementProvider,
+    InMemoryObservationIdempotencyProvider,
+    ObservationConfig,
+    ObservationEngine,
+)
 from ecos.orchestrator import (
     ApprovalState,
     GovernanceState,
@@ -48,6 +55,7 @@ from ecos.runtime.adapters import (
     GovernanceExecutor,
     LearningExecutor,
     NoopExecutor,
+    ObservationExecutor,
     ReasoningExecutor,
     SimulationExecutor,
     SpecialistsExecutor,
@@ -158,6 +166,15 @@ class CognitivePipeline:
         simulation_service = SimulationService(simulation_provider)
         decision_service = DecisionService(decision_provider)
         learning_service = LearningService(memory_service, event_service)
+        observation_engine = ObservationEngine(
+            measurement_provider=InMemoryMeasurementProvider(),
+            feedback_provider=InMemoryFeedbackProvider(),
+            idempotency_provider=InMemoryObservationIdempotencyProvider(),
+            event_service=event_service,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            config=ObservationConfig(),
+        )
         session_service = SessionService(session_repository)
         execution_engine = _execution_engine(event_service)
         executors = {
@@ -167,10 +184,10 @@ class CognitivePipeline:
             "debate": DebateExecutor(debate_service),
             "simulation": SimulationExecutor(simulation_service),
             "decision": DecisionExecutor(decision_service),
-            "memory": LearningExecutor(learning_service),
+            "learning": LearningExecutor(learning_service),
             "governance": NoopExecutor("governance"),
             "execution": ExecutionExecutor(execution_engine),
-            "observation": NoopExecutor("observation"),
+            "observation": ObservationExecutor(observation_engine),
         }
         orchestrator = Orchestrator(
             executors=executors,
@@ -266,19 +283,28 @@ class CognitivePipeline:
         if decision_package is None:
             raise RuntimeError("runtime orchestration did not produce a decision")
         recommendation = decision_package.recommendation
-        memory = orchestration_result.outputs_by_engine.get(
-            "memory"
-        ) or orchestration_result.outputs_by_engine.get("learning")
+        learning = orchestration_result.outputs_by_engine.get(
+            "learning"
+        ) or orchestration_result.outputs_by_engine.get("memory")
         learning_planned = any(
             step.engine in {"memory", "learning"} for step in plan.pipeline.steps
         )
-        if memory is None and learning_planned:
+        if learning is None and learning_planned:
             raise RuntimeError("runtime learning was rejected")
         execution.context = orchestration_result.outputs_by_engine.get("context")
         execution.reasoning = orchestration_result.outputs_by_engine.get("reasoning")
         execution.simulation = orchestration_result.outputs_by_engine.get("simulation")
         execution.recommendation = recommendation
-        execution.memory = memory
+        stored_memory_id = (
+            learning.stored_memory_references[0]
+            if getattr(learning, "stored_memory_references", ())
+            else None
+        )
+        execution.memory = (
+            self.memory_service.get(UUID(stored_memory_id))
+            if stored_memory_id is not None
+            else None
+        )
 
         updated_session = self.session_service.get_session(session_id)
         if updated_session is not None:
@@ -452,6 +478,15 @@ class CognitivePipeline:
             config=governance_config,
         )
         execution_engine = _execution_engine(self.event_service)
+        observation_engine = ObservationEngine(
+            measurement_provider=InMemoryMeasurementProvider(),
+            feedback_provider=InMemoryFeedbackProvider(),
+            idempotency_provider=InMemoryObservationIdempotencyProvider(),
+            event_service=self.event_service,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            config=ObservationConfig(),
+        )
         executors = {
             "context": ContextExecutor(self.context_service),
             "reasoning": ReasoningExecutor(self.reasoning_service),
@@ -463,14 +498,14 @@ class CognitivePipeline:
                 self.decision_service,
                 engine_type="decision_support",
             ),
-            "memory": LearningExecutor(self.learning_service),
+            "memory": LearningExecutor(self.learning_service, engine_type="memory"),
             "learning": LearningExecutor(
                 self.learning_service,
                 engine_type="learning",
             ),
             "governance": GovernanceExecutor(governance_engine),
             "execution": ExecutionExecutor(execution_engine),
-            "observation": NoopExecutor("observation"),
+            "observation": ObservationExecutor(observation_engine),
         }
         orchestrator = Orchestrator(
             executors=executors,
