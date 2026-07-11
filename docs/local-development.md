@@ -61,6 +61,18 @@ Falhas obrigatórias interrompem dependentes e produzem relatório seguro; falha
 
 O Orchestrator não realiza cognição, não chama LLM, não importa OpenAI, não depende de `AIProvider`, não acessa Container, variáveis de ambiente, PostgreSQL ou SQLAlchemy, não persiste estado próprio e não modifica o `CognitivePlan`.
 
+## Governance local
+
+O Container registra o `GovernanceEngine` real e injeta `PolicyProvider`, `ApprovalPolicyProvider`, `IdentityPort`, `EventService`, relógio, gerador de IDs e `GovernanceConfig`. O Engine valida se a cognição pode prosseguir; ele não raciocina, não altera recomendações, não concede aprovação humana, não acessa PostgreSQL, não persiste auditoria e não executa ações externas.
+
+Políticas são versionadas, imutáveis e selecionadas de forma determinística somente quando estão `active` e vigentes. Regras são estruturadas e usam operadores allowlisted; não há `eval`, código dinâmico ou linguagem arbitrária. A avaliação produz `ComplianceReport`, `ExplainabilityReport`, `PolicyViolation`, `AuthorizationDecision`, `ApprovalRequest` quando necessário e `AuditRecord` append-only em memória. O audit trail ainda não é persistido.
+
+Os níveis de aprovação são Level 1 a Level 5. Level 1 pode liberar continuidade cognitiva de baixo risco e baixo impacto, mas execução externa sempre exige aprovação humana explícita. Estados de aprovação incluem `pending`, `partially_approved`, `granted`, `rejected`, `expired`, `revoked` e `cancelled`. Papéis, aprovadores distintos, quorum, rejeição, expiração e revogação são validados pelo Engine com uma identidade previamente validada pelo `IdentityPort`; login, JWT, OAuth e autenticação real não pertencem a esta sprint.
+
+O Runtime não chama Governance diretamente. Ele continua delegando ao Orchestrator, que executa o estágio `governance`, preserva o `GovernanceResult` e pausa em `waiting_approval` quando aprovação humana é obrigatória. A retomada usa estado retornável e decisão humana explícita, preservando outputs e timeline já concluídos. O executor de Execution permanece no-op seguro e rejeita autorização ausente, expirada ou de outra Organization, Session, Plan ou escopo.
+
+O `/runtime/demo` usa uma política determinística segura de continuidade, não solicita execução externa, não simula aprovação humana e preserva o resultado público: `status` igual a `completed`, recomendação `Proceed using ECOS context, reasoning, debate and governance.` e `confidence` `0.91`.
+
 ## Provider OpenAI opcional
 
 O provider de IA padrão é `fake`, portanto a instalação e a suíte padrão não precisam de credenciais nem fazem chamadas externas. Para selecionar o adaptador OpenAI no Container:

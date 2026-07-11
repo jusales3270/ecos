@@ -13,6 +13,14 @@ from ecos.debate import AIDebateEngine, DebateService
 from ecos.decision import AIDecisionSupportEngine, DecisionService
 from ecos.domain import Objective, Organization
 from ecos.events import EventService
+from ecos.governance import (
+    DefaultApprovalPolicyProvider,
+    GovernanceConfig,
+    GovernanceEngine,
+    InMemoryPolicyProvider,
+    StaticIdentityPort,
+    demo_policy,
+)
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
 from ecos.orchestrator import (
@@ -51,6 +59,8 @@ from ecos.runtime.adapters import (
     ContextExecutor,
     DebateExecutor,
     DecisionExecutor,
+    ExecutionExecutor,
+    GovernanceExecutor,
     LearningExecutor,
     NoopExecutor,
     ReasoningExecutor,
@@ -203,6 +213,21 @@ class Container:
         self.reasoning_service = ReasoningService(self.reasoning_provider)
         self.debate_service = DebateService(self.debate_provider)
         self.simulation_service = SimulationService(self.simulation_provider)
+        self.governance_config = GovernanceConfig()
+        self.policy_provider = InMemoryPolicyProvider((demo_policy(organization.id),))
+        self.approval_policy_provider = DefaultApprovalPolicyProvider(
+            self.governance_config
+        )
+        self.identity_port = StaticIdentityPort()
+        self.governance_engine = GovernanceEngine(
+            policy_provider=self.policy_provider,
+            approval_policy_provider=self.approval_policy_provider,
+            event_service=self.event_service,
+            identity_port=self.identity_port,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            config=self.governance_config,
+        )
         self.engine_executors = {
             "context": ContextExecutor(self.context_service),
             "reasoning": ReasoningExecutor(self.reasoning_service),
@@ -219,8 +244,8 @@ class Container:
                 self.learning_service,
                 engine_type="learning",
             ),
-            "governance": NoopExecutor("governance"),
-            "execution": NoopExecutor("execution"),
+            "governance": GovernanceExecutor(self.governance_engine),
+            "execution": ExecutionExecutor(),
             "observation": NoopExecutor("observation"),
         }
         self.orchestrator = Orchestrator(

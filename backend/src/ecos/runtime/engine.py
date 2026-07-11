@@ -10,6 +10,14 @@ from ecos.decision import DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
 from ecos.domain.enums import SessionStatus
 from ecos.events import Event, EventBus, EventPriority, EventService, EventType
+from ecos.governance import (
+    DefaultApprovalPolicyProvider,
+    GovernanceConfig,
+    GovernanceEngine,
+    InMemoryPolicyProvider,
+    StaticIdentityPort,
+    demo_policy,
+)
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService
 from ecos.orchestrator import (
@@ -29,6 +37,8 @@ from ecos.runtime.adapters import (
     ContextExecutor,
     DebateExecutor,
     DecisionExecutor,
+    ExecutionExecutor,
+    GovernanceExecutor,
     LearningExecutor,
     NoopExecutor,
     ReasoningExecutor,
@@ -151,7 +161,7 @@ class CognitivePipeline:
             "decision": DecisionExecutor(decision_service),
             "memory": LearningExecutor(learning_service),
             "governance": NoopExecutor("governance"),
-            "execution": NoopExecutor("execution"),
+            "execution": ExecutionExecutor(),
             "observation": NoopExecutor("observation"),
         }
         orchestrator = Orchestrator(
@@ -212,7 +222,10 @@ class CognitivePipeline:
             execution.cognitive_session.objective,
         )
         execution.plan = plan
-        self._configure_orchestrator()
+        self._configure_orchestrator(
+            execution.cognitive_session.organization_id,
+            plan,
+        )
         orchestration_result = self.orchestrator_service.execute(
             OrchestrationInput(
                 cognitive_plan=plan,
@@ -350,7 +363,7 @@ class CognitivePipeline:
                     priority=objective.priority,
                     desired_outcome="Produce a governed recommendation.",
                     constraints=("No external calls", "No real AI providers"),
-                    policies=("human_approval_required",),
+                    policies=("runtime_governance_level_1",),
                     resources_available=("runtime",),
                     domains=("strategy", "risk"),
                     context_available=True,
@@ -402,8 +415,34 @@ class CognitivePipeline:
             confidence_target=0.9,
         )
 
-    def _configure_orchestrator(self) -> None:
+    def _configure_orchestrator(
+        self,
+        organization_id: UUID,
+        plan: CognitivePlan,
+    ) -> None:
         """Inject a fresh executor registry from the current runtime services."""
+        governance_config = GovernanceConfig()
+        base_policy = demo_policy(organization_id)
+        plan_policies = tuple(
+            base_policy.model_copy(
+                update={
+                    "policy_id": policy_id,
+                    "name": policy_id,
+                    "applicable_actions": tuple(),
+                }
+            )
+            for policy_id in plan.governance_requirements.policy_checks
+            if policy_id != base_policy.policy_id
+        )
+        governance_engine = GovernanceEngine(
+            policy_provider=InMemoryPolicyProvider((base_policy, *plan_policies)),
+            approval_policy_provider=DefaultApprovalPolicyProvider(governance_config),
+            event_service=self.event_service,
+            identity_port=StaticIdentityPort(),
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            config=governance_config,
+        )
         executors = {
             "context": ContextExecutor(self.context_service),
             "reasoning": ReasoningExecutor(self.reasoning_service),
@@ -420,8 +459,8 @@ class CognitivePipeline:
                 self.learning_service,
                 engine_type="learning",
             ),
-            "governance": NoopExecutor("governance"),
-            "execution": NoopExecutor("execution"),
+            "governance": GovernanceExecutor(governance_engine),
+            "execution": ExecutionExecutor(),
             "observation": NoopExecutor("observation"),
         }
         orchestrator = Orchestrator(
