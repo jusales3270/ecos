@@ -1,26 +1,40 @@
-"""Executable fake runtime pipeline for ECOS."""
+"""Executable runtime pipeline entrypoint for ECOS."""
 
-from uuid import UUID
+import asyncio
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
-from ecos.context import ContextBuildRequest, ContextProvider, ContextService
-from ecos.debate import Debate, DebateService
-from ecos.decision import DecisionContext, DecisionService
+from ecos.context import ContextProvider, ContextService
+from ecos.debate import DebateService
+from ecos.decision import DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
 from ecos.domain.enums import SessionStatus
 from ecos.events import Event, EventBus, EventPriority, EventService, EventType
-from ecos.learning import LearningObject, LearningService
-from ecos.memory import MemoryRepository, MemoryService, MemoryType
+from ecos.learning import LearningService
+from ecos.memory import MemoryRepository, MemoryService
 from ecos.orchestrator import (
-    ExecutionMode,
-    ExecutionPlan,
-    ExecutionState,
-    ExecutionStatus,
-    ExecutionStep,
+    ApprovalState,
+    GovernanceState,
+    OrchestrationConfig,
+    OrchestrationInput,
+    OrchestrationMode,
+    Orchestrator,
     OrchestratorService,
+    PipelineExecutionStatus,
 )
 from ecos.planner import CognitivePlan, ExecutionStrategy, PlannerInput, PlannerService
 from ecos.providers import AIProvider, AIService, ProviderRegistry, ProviderType
-from ecos.reasoning import ReasoningContext, ReasoningService, ReasoningType
+from ecos.reasoning import ReasoningService
+from ecos.runtime.adapters import (
+    ContextExecutor,
+    DebateExecutor,
+    DecisionExecutor,
+    LearningExecutor,
+    NoopExecutor,
+    ReasoningExecutor,
+    SimulationExecutor,
+    SpecialistsExecutor,
+)
 from ecos.runtime.fakes import (
     FakeAIProvider,
     FakeContextProvider,
@@ -47,7 +61,7 @@ from ecos.session import (
     SessionTransition,
     TransitionType,
 )
-from ecos.simulation import SimulationContext, SimulationService
+from ecos.simulation import SimulationService
 from ecos.specialists import SpecialistRegistry, SpecialistService
 
 
@@ -117,6 +131,38 @@ class CognitivePipeline:
 
         memory_service = MemoryService(memory_repository)
         event_service = EventService(event_bus)
+        context_service = ContextService(context_provider)
+        reasoning_service = ReasoningService(reasoning_provider)
+        specialist_service = SpecialistService(
+            specialist_provider,
+            SpecialistRegistry(),
+        )
+        debate_service = DebateService(debate_provider)
+        simulation_service = SimulationService(simulation_provider)
+        decision_service = DecisionService(decision_provider)
+        learning_service = LearningService(memory_service, event_service)
+        session_service = SessionService(session_repository)
+        executors = {
+            "context": ContextExecutor(context_service),
+            "reasoning": ReasoningExecutor(reasoning_service),
+            "specialists": SpecialistsExecutor(specialist_service),
+            "debate": DebateExecutor(debate_service),
+            "simulation": SimulationExecutor(simulation_service),
+            "decision": DecisionExecutor(decision_service),
+            "memory": LearningExecutor(learning_service),
+            "governance": NoopExecutor("governance"),
+            "execution": NoopExecutor("execution"),
+            "observation": NoopExecutor("observation"),
+        }
+        orchestrator = Orchestrator(
+            executors=executors,
+            event_service=event_service,
+            session_service=session_service,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            sleeper=asyncio.sleep,
+            config=OrchestrationConfig(mode=OrchestrationMode.SEQUENTIAL),
+        )
         return cls(
             memory_repository=memory_repository,
             session_repository=session_repository,
@@ -124,20 +170,20 @@ class CognitivePipeline:
             context_provider=context_provider,
             ai_provider=ai_provider,
             memory_service=memory_service,
-            learning_service=LearningService(memory_service, event_service),
-            session_service=SessionService(session_repository),
+            learning_service=learning_service,
+            session_service=session_service,
             event_service=event_service,
-            context_service=ContextService(context_provider),
+            context_service=context_service,
             planner_service=PlannerService(planner_provider),
-            reasoning_service=ReasoningService(reasoning_provider),
-            specialist_service=SpecialistService(
-                specialist_provider,
-                SpecialistRegistry(),
+            reasoning_service=reasoning_service,
+            specialist_service=specialist_service,
+            debate_service=debate_service,
+            simulation_service=simulation_service,
+            decision_service=decision_service,
+            orchestrator_service=OrchestratorService(
+                orchestrator_provider,
+                orchestrator,
             ),
-            debate_service=DebateService(debate_provider),
-            simulation_service=SimulationService(simulation_provider),
-            decision_service=DecisionService(decision_provider),
-            orchestrator_service=OrchestratorService(orchestrator_provider),
             ai_service=ai_service,
         )
 
@@ -166,277 +212,56 @@ class CognitivePipeline:
             execution.cognitive_session.objective,
         )
         execution.plan = plan
-        if plan.metadata.get("planner") != "deterministic":
-            self._run_orchestrator(plan)
-
-        self._update_session_state(
-            execution,
-            lifecycle_status=SessionLifecycleStatus.EXECUTING,
-            current_stage=SessionStage.CONTEXT,
-            active_engine="context",
-            progress=0.2,
-        )
-        if not self._plan_has_engine(plan, "context"):
-            msg = "planned pipeline does not include context"
-            raise RuntimeError(msg)
-        if isinstance(self.context_provider, FakeContextProvider):
-            self.context_provider.configure(
-                session_id,
-                execution.cognitive_session.objective,
-            )
-            context = self.context_service.build()
-        else:
-            context_request = ContextBuildRequest(
-                session_id=session_id,
+        self._configure_orchestrator()
+        orchestration_result = self.orchestrator_service.execute(
+            OrchestrationInput(
+                cognitive_plan=plan,
+                active_session=execution.managed_session,
                 organization_id=execution.cognitive_session.organization_id,
-                objective=execution.cognitive_session.objective,
-                user_information=[
-                    execution.cognitive_session.objective.description or ""
-                ]
-                if execution.cognitive_session.objective.description
-                else [],
-                constraints=list(plan.strategy.constraints),
-                policies=[],
-                resources=[step.engine for step in plan.pipeline.steps],
-                external_signals=[],
-                relevant_entities=[execution.cognitive_session.objective.title],
-                required_context_fields=["objective", "memory"],
+                session_id=session_id,
                 correlation_id=session_id,
-            )
-            context = self.context_service.build(context_request)
-        if not self.context_service.validate(context):
-            msg = "runtime context validation failed"
-            raise RuntimeError(msg)
-        execution.context = context
-        if isinstance(self.context_provider, FakeContextProvider):
-            self._publish(
-                EventType.CONTEXT_CREATED,
-                session_id,
-                {"confidence": context.confidence},
-            )
-
-        if not self._plan_has_engine(plan, "reasoning"):
-            msg = "planned pipeline does not include reasoning"
-            raise RuntimeError(msg)
-        self._update_session_state(
-            execution,
-            lifecycle_status=SessionLifecycleStatus.EXECUTING,
-            current_stage=SessionStage.REASONING,
-            active_engine="reasoning",
-            progress=0.4,
-        )
-        reasoning_context = ReasoningContext(
-            session_id=session_id,
-            context=context,
-            reasoning_type=ReasoningType.STRATEGIC,
-            constraints=list(context.constraints),
-            memory=[
-                str(reference.memory_id) for reference in context.memory_references
-            ],
-        )
-        self._publish(
-            EventType.REASONING_STARTED,
-            session_id,
-            {"status": "started"},
-        )
-        reasoning = self.reasoning_service.analyze(reasoning_context)
-        execution.reasoning = reasoning
-        completed_payload = {"confidence": reasoning.confidence}
-        completed_payload.update(reasoning.metadata)
-        self._publish(
-            EventType.REASONING_COMPLETED,
-            session_id,
-            completed_payload,
-        )
-
-        specialists = []
-        contributions = []
-        if self._plan_has_engine(plan, "specialists"):
-            planned_types = {
-                selection.specialist_type for selection in plan.selected_specialists
-            }
-            specialists = [
-                specialist
-                for specialist in self.specialist_service.load()
-                if not planned_types or specialist.type in planned_types
-            ]
-            contributions = [
-                self.specialist_service.contribute(
-                    specialist.id,
-                    {"objective": objective, "reasoning": reasoning.summary},
-                )
-                for specialist in specialists
-            ]
-            self._publish(
-                EventType.SPECIALIST_CONTRIBUTED,
-                session_id,
-                {"count": len(contributions)},
-            )
-
-        if not self._plan_has_engine(plan, "debate"):
-            msg = "planned pipeline does not include debate"
-            raise RuntimeError(msg)
-        self._update_session_state(
-            execution,
-            lifecycle_status=SessionLifecycleStatus.EXECUTING,
-            current_stage=SessionStage.DEBATE,
-            active_engine="debate",
-            progress=0.6,
-        )
-        debate = Debate(
-            session_id=session_id,
-            specialists=specialists,
-            objective=objective,
-            unified_context=context.model_dump(mode="json"),
-            organizational_constraints=reasoning_context.constraints,
-            reasoning_result=reasoning,
-            contributions=contributions,
-        )
-        self._publish(
-            EventType.DEBATE_STARTED,
-            session_id,
-            {"status": "started", "participants": len(specialists)},
-        )
-        debate = self.debate_service.start(debate)
-        arguments = self.debate_service.collect_arguments(debate)
-        debate = debate.model_copy(update={"arguments": arguments})
-        debate_result = self.debate_service.finalize(debate)
-        debate_payload = {"confidence": debate_result.confidence}
-        debate_payload.update(debate_result.metadata)
-        self._publish(
-            EventType.DEBATE_COMPLETED,
-            session_id,
-            debate_payload,
-        )
-
-        if not self._plan_has_engine(plan, "simulation"):
-            msg = "planned pipeline does not include simulation"
-            raise RuntimeError(msg)
-        self._update_session_state(
-            execution,
-            lifecycle_status=SessionLifecycleStatus.EXECUTING,
-            current_stage=SessionStage.SIMULATION,
-            active_engine="simulation",
-            progress=0.7,
-        )
-        simulation_context = SimulationContext(
-            session_id=session_id,
-            objective=execution.cognitive_session.objective.model_dump(mode="json"),
-            unified_context=context.model_dump(mode="json"),
-            organizational_constraints=reasoning_context.constraints,
-            relevant_policies=[
-                element.content
-                for element in context.elements
-                if element.source_type.value == "POLICY"
-            ],
-            memory=[item.model_dump(mode="json") for item in context.memory_references],
-            reasoning_report=reasoning,
-            debate_report=debate_result,
-            external_signals=[
-                element.model_dump(mode="json")
-                for element in context.elements
-                if element.source_type.value == "EXTERNAL"
-            ],
-            correlation_id=reasoning.correlation_id,
-        )
-        self._publish(EventType.SIMULATION_STARTED, session_id, {"status": "started"})
-        simulation = self.simulation_service.simulate(simulation_context)
-        execution.simulation = simulation
-        self._publish(
-            EventType.SIMULATION_COMPLETED,
-            session_id,
-            {
-                "status": "completed",
-                "scenario_count": len(simulation.scenarios),
-                "risk_count": len(simulation.cross_scenario_risks)
-                + sum(len(item.risks) for item in simulation.scenarios),
-                "contingency_count": len(simulation.contingencies),
-                "resilience_score": simulation.resilience_score,
-                "confidence": simulation.confidence,
-                **simulation.metadata,
-            },
-        )
-
-        if not (
-            self._plan_has_engine(plan, "decision_support")
-            or self._plan_has_engine(plan, "decision")
-        ):
-            msg = "planned pipeline does not include decision support"
-            raise RuntimeError(msg)
-        self._update_session_state(
-            execution,
-            lifecycle_status=SessionLifecycleStatus.EXECUTING,
-            current_stage=SessionStage.RECOMMENDATION,
-            active_engine="decision",
-            progress=0.8,
-        )
-        decision_context = DecisionContext(
-            session_id=session_id,
-            objective=execution.cognitive_session.objective.model_dump(mode="json"),
-            unified_context=context,
-            constraints=reasoning_context.constraints,
-            relevant_policies=[
-                element.content
-                for element in context.elements
-                if element.source_type.value == "POLICY"
-            ],
-            memory=[item.model_dump(mode="json") for item in context.memory_references],
-            reasoning_report=reasoning,
-            debate_report=debate_result,
-            simulation_report=simulation,
-            correlation_id=reasoning.correlation_id,
-        )
-        self._publish(
-            EventType.RECOMMENDATION_STARTED,
-            session_id,
-            {"status": "started"},
-        )
-        recommendation = self.decision_service.build_recommendation(
-            reasoning,
-            debate_result,
-            decision_context,
-        )
-        executive_brief = self.decision_service.build_executive_brief(recommendation)
-        decision_package = self.decision_service.build_decision_package(
-            recommendation,
-            executive_brief,
-        )
-        execution.recommendation = recommendation
-        self._publish(
-            EventType.RECOMMENDATION_CREATED,
-            session_id,
-            {
-                "confidence": recommendation.confidence,
-                "alternative_count": len(recommendation.alternatives),
-                "risk_count": len(recommendation.risks),
-                **decision_package.metadata,
-            },
-        )
-
-        memory = self.learning_service.learn(
-            LearningObject(
-                session_id=session_id,
-                memory_type=MemoryType.EPISODIC,
-                title="Runtime cognitive pipeline completed",
-                description=recommendation.summary,
-                evidence=[reasoning.summary, *debate_result.recommendations],
-                tags=["runtime", "demo", "cognitive-pipeline"],
-                confidence=recommendation.confidence,
-                origin="runtime",
-                organization_id=execution.cognitive_session.organization_id,
+                approval_state=ApprovalState(),
+                governance_state=GovernanceState(
+                    satisfied=False,
+                    organization_id=execution.cognitive_session.organization_id,
+                    session_id=session_id,
+                    plan_id=plan.plan_id,
+                    metadata={"runtime": True},
+                ),
+                resources_available=("runtime",),
+                safe_metadata={"runtime": True},
             )
         )
-        if memory is None:
+        if orchestration_result.status is not PipelineExecutionStatus.COMPLETED:
+            if orchestration_result.failure_report is not None:
+                raise RuntimeError(orchestration_result.failure_report.safe_message)
+            raise RuntimeError(
+                f"runtime orchestration did not complete: "
+                f"{orchestration_result.status.value}"
+            )
+        decision_package = orchestration_result.outputs_by_engine.get(
+            "decision"
+        ) or orchestration_result.outputs_by_engine.get("decision_support")
+        if decision_package is None:
+            raise RuntimeError("runtime orchestration did not produce a decision")
+        recommendation = decision_package.recommendation
+        memory = orchestration_result.outputs_by_engine.get(
+            "memory"
+        ) or orchestration_result.outputs_by_engine.get("learning")
+        learning_planned = any(
+            step.engine in {"memory", "learning"} for step in plan.pipeline.steps
+        )
+        if memory is None and learning_planned:
             raise RuntimeError("runtime learning was rejected")
+        execution.context = orchestration_result.outputs_by_engine.get("context")
+        execution.reasoning = orchestration_result.outputs_by_engine.get("reasoning")
+        execution.simulation = orchestration_result.outputs_by_engine.get("simulation")
+        execution.recommendation = recommendation
         execution.memory = memory
 
-        self._update_session_state(
-            execution,
-            lifecycle_status=SessionLifecycleStatus.COMPLETED,
-            current_stage=SessionStage.LEARNING,
-            active_engine=None,
-            progress=1.0,
-        )
+        updated_session = self.session_service.get_session(session_id)
+        if updated_session is not None:
+            execution.managed_session = updated_session
         self._record_transition(
             session_id=session_id,
             transition_type=TransitionType.COMPLETE,
@@ -577,40 +402,40 @@ class CognitivePipeline:
             confidence_target=0.9,
         )
 
-    def _plan_has_engine(self, plan: CognitivePlan, engine: str) -> bool:
-        """Return whether a normalized engine is present in the plan."""
-        return engine in {selection.engine for selection in plan.selected_engines}
-
-    def _run_orchestrator(self, plan: CognitivePlan) -> None:
-        """Run the fake orchestrator provider over the planned pipeline."""
-        steps = [
-            ExecutionStep(
-                order=step.order,
-                engine=step.engine,
-                depends_on=step.depends_on,
-                state=ExecutionState(status=ExecutionStatus.CREATED),
-                optional=step.optional,
-            )
-            for step in plan.pipeline.steps
-        ]
-        execution_plan = ExecutionPlan(
-            session_id=plan.session_id,
-            execution_mode=ExecutionMode.SEQUENTIAL,
-            steps=steps,
+    def _configure_orchestrator(self) -> None:
+        """Inject a fresh executor registry from the current runtime services."""
+        executors = {
+            "context": ContextExecutor(self.context_service),
+            "reasoning": ReasoningExecutor(self.reasoning_service),
+            "specialists": SpecialistsExecutor(self.specialist_service),
+            "debate": DebateExecutor(self.debate_service),
+            "simulation": SimulationExecutor(self.simulation_service),
+            "decision": DecisionExecutor(self.decision_service),
+            "decision_support": DecisionExecutor(
+                self.decision_service,
+                engine_type="decision_support",
+            ),
+            "memory": LearningExecutor(self.learning_service),
+            "learning": LearningExecutor(
+                self.learning_service,
+                engine_type="learning",
+            ),
+            "governance": NoopExecutor("governance"),
+            "execution": NoopExecutor("execution"),
+            "observation": NoopExecutor("observation"),
+        }
+        orchestrator = Orchestrator(
+            executors=executors,
+            event_service=self.event_service,
+            session_service=self.session_service,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            sleeper=asyncio.sleep,
+            config=OrchestrationConfig(mode=OrchestrationMode.SEQUENTIAL),
         )
-        execution_plan = self.orchestrator_service.start(execution_plan)
-        for step in execution_plan.steps:
-            self.orchestrator_service.execute_step(execution_plan, step)
-        self.orchestrator_service.complete(execution_plan)
-        self._publish(
-            EventType.EXECUTION_STARTED,
-            plan.session_id,
-            {"steps": len(steps)},
-        )
-        self._publish(
-            EventType.EXECUTION_COMPLETED,
-            plan.session_id,
-            {"steps": len(steps)},
+        self.orchestrator_service = OrchestratorService(
+            self.orchestrator_service._provider,
+            orchestrator,
         )
 
     def _update_session_state(

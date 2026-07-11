@@ -1,15 +1,34 @@
 """Service layer for the ECOS Orchestrator architecture."""
 
-from ecos.orchestrator.models import ExecutionPlan, ExecutionResult, ExecutionStep
+from ecos.orchestrator.engine import Orchestrator
+from ecos.orchestrator.models import (
+    ExecutionPlan,
+    ExecutionResult,
+    ExecutionStep,
+    OrchestrationInput,
+    OrchestrationResult,
+)
 from ecos.orchestrator.provider import OrchestratorProvider
 
 
 class OrchestratorService:
     """Coordinates execution plans through a provider abstraction only."""
 
-    def __init__(self, provider: OrchestratorProvider) -> None:
+    def __init__(
+        self,
+        provider: OrchestratorProvider,
+        orchestrator: Orchestrator | None = None,
+    ) -> None:
         """Initialize the service with an orchestrator provider abstraction."""
         self._provider = provider
+        self._orchestrator = orchestrator
+
+    def execute(self, orchestration_input: OrchestrationInput) -> OrchestrationResult:
+        """Execute a CognitivePlan through the real Orchestrator."""
+        if self._orchestrator is None:
+            msg = "real orchestrator is not configured"
+            raise RuntimeError(msg)
+        return self._orchestrator.execute(orchestration_input)
 
     def start(self, plan: ExecutionPlan) -> ExecutionPlan:
         """Start an execution plan through the provider abstraction."""

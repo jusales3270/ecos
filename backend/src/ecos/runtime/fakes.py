@@ -284,10 +284,16 @@ class FakePlannerProvider(PlannerProvider):
         specialists: list[SpecialistSelection],
     ) -> Pipeline:
         """Build an ordered deterministic pipeline."""
-        steps = [
-            PipelineStep(order=index, engine=engine.engine)
-            for index, engine in enumerate(engines, start=1)
-        ]
+        steps = []
+        previous_stage_id: UUID | None = None
+        for index, engine in enumerate(engines, start=1):
+            step = PipelineStep(
+                order=index,
+                engine=engine.engine,
+                dependencies=() if previous_stage_id is None else (previous_stage_id,),
+            )
+            steps.append(step)
+            previous_stage_id = step.stage_id
         return Pipeline(steps=steps, metadata={"runtime": True})
 
 

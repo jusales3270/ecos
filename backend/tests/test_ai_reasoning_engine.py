@@ -230,29 +230,29 @@ def test_runtime_emits_started_before_provider_and_completed_only_on_success() -
     provider = StubAIProvider(valid_report())
     provider.before_generate = lambda: (
         (
-            EventType.REASONING_STARTED
+            EventType.ENGINE_INVOKED
             in [envelope.event.event_type for envelope in pipeline.event_bus.envelopes]
         )
-        or pytest.fail("ReasoningStarted must precede provider call")
+        or pytest.fail("EngineInvoked must precede provider call")
     )
     pipeline.reasoning_service = ReasoningService(engine(provider))
     pipeline.run("Test event ordering")
     types = [envelope.event.event_type for envelope in pipeline.event_bus.envelopes]
-    assert types.index(EventType.REASONING_STARTED) < types.index(
-        EventType.REASONING_COMPLETED
+    assert types.index(EventType.ENGINE_INVOKED) < types.index(
+        EventType.ENGINE_COMPLETED
     )
 
     failing_pipeline = CognitivePipeline.with_fakes()
     failing_pipeline.reasoning_service = ReasoningService(
         engine(StubAIProvider(error=RuntimeError("down")))
     )
-    with pytest.raises(ReasoningProviderError):
+    with pytest.raises(RuntimeError, match="AI provider failed"):
         failing_pipeline.run("Test failure events")
     failure_types = [
         envelope.event.event_type for envelope in failing_pipeline.event_bus.envelopes
     ]
-    assert EventType.REASONING_STARTED in failure_types
-    assert EventType.REASONING_COMPLETED not in failure_types
+    assert EventType.ENGINE_FAILED in failure_types
+    assert EventType.PIPELINE_COMPLETED not in failure_types
 
 
 def test_reasoning_module_does_not_import_openai() -> None:
