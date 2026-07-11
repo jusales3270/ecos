@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from uuid import UUID
 
-from ecos.events import Event, EventPriority, EventService, EventType
+from ecos.events import Event, EventMetadata, EventPriority, EventService, EventType
 from ecos.memory import MemoryObject, MemoryService, MemoryType
 from ecos.observation import ObservedOutcomeStatus
 
@@ -295,12 +295,17 @@ class LearningService:
         candidate: LearningObject,
         payload: dict[str, str | bool | None],
     ) -> None:
+        safe_payload: dict[str, str | bool | None] = dict(payload)
+        if candidate.organization_id is not None:
+            safe_payload["organization_id"] = str(candidate.organization_id)
         envelope = self._event_service.publish(
             Event(
                 event_type=event_type,
                 source="learning",
                 session_id=candidate.session_id,
-                payload=payload,
+                organization_id=candidate.organization_id,
+                payload=safe_payload,
+                metadata=EventMetadata(correlation_id=candidate.session_id),
                 priority=EventPriority.NORMAL,
             )
         )
@@ -583,7 +588,12 @@ class LearningService:
                     event_type=EventType.MEMORY_UPDATED,
                     source="learning",
                     session_id=proposal.session_id,
-                    payload={"memory_id": str(memory.id)},
+                    organization_id=proposal.organization_id,
+                    payload={
+                        "organization_id": str(proposal.organization_id),
+                        "memory_id": str(memory.id),
+                    },
+                    metadata=EventMetadata(correlation_id=proposal.session_id),
                     priority=EventPriority.NORMAL,
                 )
             )
@@ -601,7 +611,13 @@ class LearningService:
                 event_type=event_type,
                 source="learning",
                 session_id=request.session_id,
-                payload=payload,
+                organization_id=request.organization_id,
+                payload={
+                    "organization_id": str(request.organization_id),
+                    "plan_id": str(request.plan_id),
+                    **payload,
+                },
+                metadata=EventMetadata(correlation_id=request.correlation_id),
                 priority=EventPriority.NORMAL,
             )
         )

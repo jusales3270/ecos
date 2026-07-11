@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -132,6 +132,25 @@ class EventType(StrEnum):
     AUDIT_RECORDED = "AUDIT_RECORDED"
     GOVERNANCE_COMPLETED = "GOVERNANCE_COMPLETED"
     GOVERNANCE_FAILED = "GOVERNANCE_FAILED"
+    EVENT_VALIDATED = "EVENT_VALIDATED"
+    EVENT_STORED = "EVENT_STORED"
+    EVENT_PUBLISHED = "EVENT_PUBLISHED"
+    EVENT_DELIVERY_FAILED = "EVENT_DELIVERY_FAILED"
+    EVENT_REPLAY_STARTED = "EVENT_REPLAY_STARTED"
+    EVENT_REPLAY_COMPLETED = "EVENT_REPLAY_COMPLETED"
+    EVENT_REPLAY_FAILED = "EVENT_REPLAY_FAILED"
+    AUDIT_RECORD_STORED = "AUDIT_RECORD_STORED"
+    AUDIT_INTEGRITY_VALIDATED = "AUDIT_INTEGRITY_VALIDATED"
+    AUDIT_INTEGRITY_FAILED = "AUDIT_INTEGRITY_FAILED"
+    METRIC_COLLECTED = "METRIC_COLLECTED"
+    TRACE_STARTED = "TRACE_STARTED"
+    TRACE_COMPLETED = "TRACE_COMPLETED"
+    TRACE_INCOMPLETE = "TRACE_INCOMPLETE"
+    HEALTH_CHANGED = "HEALTH_CHANGED"
+    ALERT_GENERATED = "ALERT_GENERATED"
+    ALERT_RESOLVED = "ALERT_RESOLVED"
+    OBSERVABILITY_DEGRADED = "OBSERVABILITY_DEGRADED"
+    OBSERVABILITY_RECOVERED = "OBSERVABILITY_RECOVERED"
 
 
 class EventPriority(StrEnum):
@@ -143,10 +162,43 @@ class EventPriority(StrEnum):
     CRITICAL = "CRITICAL"
 
 
+class EventCategory(StrEnum):
+    """Canonical event categories used for storage and projection."""
+
+    DOMAIN = "domain"
+    INFRASTRUCTURE = "infrastructure"
+    PLATFORM = "platform"
+    COGNITIVE = "cognitive"
+    ORGANIZATIONAL = "organizational"
+    SECURITY = "security"
+
+
+class EventClassification(StrEnum):
+    """Safe event information classifications."""
+
+    PUBLIC = "public"
+    INTERNAL = "internal"
+    CONFIDENTIAL = "confidential"
+    RESTRICTED = "restricted"
+
+
+class EventSecurityLevel(StrEnum):
+    """Event security levels prepared for future access-control work."""
+
+    LOW = "low"
+    STANDARD = "standard"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
 class EventModel(BaseModel):
     """Base event model with identity and UTC creation timestamp."""
 
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
+    model_config = ConfigDict(
+        frozen=True,
+        populate_by_name=True,
+        str_strip_whitespace=True,
+    )
 
     id: UUID = Field(
         default_factory=uuid4,
@@ -172,7 +224,11 @@ class EventModel(BaseModel):
 class EventMetadata(BaseModel):
     """Metadata associated with an event."""
 
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
+    model_config = ConfigDict(
+        frozen=True,
+        populate_by_name=True,
+        str_strip_whitespace=True,
+    )
 
     correlation_id: UUID | None = Field(
         default=None,
@@ -182,7 +238,7 @@ class EventMetadata(BaseModel):
         default=None,
         description="Optional causation event identifier.",
     )
-    attributes: dict[str, EventPayloadValue] = Field(
+    attributes: dict[str, Any] = Field(
         default_factory=dict,
         description="Structured event metadata attributes.",
     )
@@ -191,8 +247,8 @@ class EventMetadata(BaseModel):
     @classmethod
     def validate_attributes(
         cls,
-        value: dict[str, EventPayloadValue],
-    ) -> dict[str, EventPayloadValue]:
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
         """Reject blank metadata attribute keys."""
         if any(key.strip() == "" for key in value):
             msg = "metadata attribute keys cannot be blank"
@@ -204,16 +260,30 @@ class Event(EventModel):
     """Event emitted by an ECOS module."""
 
     event_type: EventType = Field(description="Event category.")
+    category: EventCategory = Field(
+        default=EventCategory.DOMAIN,
+        description="Canonical event category.",
+    )
     source: str = Field(
         min_length=1,
         max_length=200,
         description="Module or component that emitted the event.",
     )
+    source_version: str = Field(
+        default="1",
+        min_length=1,
+        max_length=50,
+        description="Version of the source component contract.",
+    )
+    organization_id: UUID | None = Field(
+        default=None,
+        description="Organization scope for organizational events.",
+    )
     session_id: UUID | None = Field(
         default=None,
         description="Optional cognitive session identifier.",
     )
-    payload: dict[str, EventPayloadValue] = Field(
+    payload: dict[str, Any] = Field(
         default_factory=dict,
         description="Structured event payload.",
     )
@@ -225,25 +295,77 @@ class Event(EventModel):
         default=EventPriority.NORMAL,
         description="Event priority.",
     )
+    event_version: int = Field(default=1, gt=0)
+    schema_version: int = Field(default=1, gt=0)
+    classification: EventClassification = EventClassification.INTERNAL
+    security_level: EventSecurityLevel = EventSecurityLevel.STANDARD
+    environment: str | None = Field(default=None, max_length=100)
+    actor_reference: str | None = Field(default=None, max_length=200)
+    trace_reference: str | None = Field(default=None, max_length=200)
+    reason_codes: tuple[str, ...] = Field(default_factory=tuple)
 
     @field_validator("payload")
     @classmethod
     def validate_payload(
         cls,
-        value: dict[str, EventPayloadValue],
-    ) -> dict[str, EventPayloadValue]:
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
         """Reject blank payload keys."""
         if any(key.strip() == "" for key in value):
             msg = "payload keys cannot be blank"
             raise ValueError(msg)
         return value
 
+    @field_validator("reason_codes", mode="before")
+    @classmethod
+    def tuple_reason_codes(cls, value: object) -> tuple[str, ...]:
+        """Normalize reason codes to an immutable tuple."""
+        return tuple(value or ())
+
+    @model_validator(mode="after")
+    def infer_organization_id(self) -> Self:
+        """Infer organization scope from safe legacy payload/metadata fields."""
+        if self.organization_id is not None:
+            return self
+        candidate = self.payload.get("organization_id") or self.metadata.attributes.get(
+            "organization_id"
+        )
+        if candidate is None:
+            return self
+        object.__setattr__(self, "organization_id", UUID(str(candidate)))
+        return self
+
+    @property
+    def event_id(self) -> UUID:
+        """Canonical event identifier alias."""
+        return self.id
+
+    @property
+    def occurred_at(self) -> datetime:
+        """Canonical occurrence timestamp alias."""
+        return self.created_at
+
+    @property
+    def source_component(self) -> str:
+        """Canonical source component alias."""
+        return self.source
+
+    @property
+    def correlation_id(self) -> UUID | None:
+        """Canonical correlation identifier alias."""
+        return self.metadata.correlation_id
+
+    @property
+    def causation_id(self) -> UUID | None:
+        """Canonical causation identifier alias."""
+        return self.metadata.causation_id
+
 
 class EventEnvelope(EventModel):
     """Envelope used to move an event through the Event Bus boundary."""
 
     event: Event = Field(description="Event carried by the envelope.")
-    headers: dict[str, EventPayloadValue] = Field(
+    headers: dict[str, Any] = Field(
         default_factory=dict,
         description="Transport-neutral envelope headers.",
     )
@@ -252,8 +374,8 @@ class EventEnvelope(EventModel):
     @classmethod
     def validate_headers(
         cls,
-        value: dict[str, EventPayloadValue],
-    ) -> dict[str, EventPayloadValue]:
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
         """Reject blank header keys."""
         if any(key.strip() == "" for key in value):
             msg = "header keys cannot be blank"

@@ -35,6 +35,10 @@ class Settings(BaseSettings):
         default="fake",
         description="Memory repository implementation used by the application.",
     )
+    observability_repository: Literal["memory", "postgres"] = Field(
+        default="memory",
+        description="Event, audit and observability repository implementation.",
+    )
     ai_provider: Literal["fake", "openai"] = Field(
         default="fake",
         description="AI provider implementation used by the application.",

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from ecos.core.settings import Settings
 from ecos.memory.orm import MemoryRecord  # noqa: F401
+from ecos.observability.postgres import EventRecord  # noqa: F401
 from ecos.session.orm import Base
 
 config = context.config

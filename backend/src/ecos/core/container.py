@@ -30,6 +30,25 @@ from ecos.governance import (
 )
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
+from ecos.observability import (
+    AlertProjector,
+    AuditProjector,
+    EventReplayService,
+    InMemoryAuditRepository,
+    InMemoryEventStore,
+    InMemoryObservabilityRepository,
+    MetricProjector,
+    ObservabilityService,
+    RedactionPolicy,
+    SessionTraceReconstructor,
+    StructuredLogProjector,
+    TraceProjector,
+)
+from ecos.observability.postgres import (
+    PostgresAuditRepository,
+    PostgresEventStore,
+    PostgresObservabilityRepository,
+)
 from ecos.observation import (
     InMemoryFeedbackProvider,
     InMemoryMeasurementProvider,
@@ -145,7 +164,53 @@ class Container:
         self.ai_provider_type = ai_provider_type
 
         self.memory_service = MemoryService(self.memory_repository)
-        self.event_service = EventService(self.event_bus)
+        self.redaction_policy = RedactionPolicy()
+        if self.settings.observability_repository == "postgres":
+            self.event_store = PostgresEventStore(self.settings.database_url)
+            self.audit_repository = PostgresAuditRepository(self.settings.database_url)
+            self.observability_repository = PostgresObservabilityRepository(
+                self.settings.database_url
+            )
+        else:
+            self.event_store = InMemoryEventStore(self.redaction_policy)
+            self.audit_repository = InMemoryAuditRepository()
+            self.observability_repository = InMemoryObservabilityRepository()
+        self.audit_projector = AuditProjector(self.audit_repository)
+        self.metric_projector = MetricProjector(self.observability_repository)
+        self.trace_projector = TraceProjector(self.observability_repository)
+        self.alert_projector = AlertProjector(self.observability_repository)
+        self.structured_log_projector = StructuredLogProjector(
+            self.observability_repository
+        )
+        self.event_service = EventService(
+            self.event_bus,
+            self.event_store,
+            projectors=(
+                self.audit_projector,
+                self.metric_projector,
+                self.trace_projector,
+                self.alert_projector,
+                self.structured_log_projector,
+            ),
+            redaction_policy=self.redaction_policy,
+        )
+        self.event_replay_service = EventReplayService(
+            self.event_store,
+            projectors=(
+                self.audit_projector,
+                self.metric_projector,
+                self.trace_projector,
+                self.alert_projector,
+                self.structured_log_projector,
+            ),
+        )
+        self.session_trace_reconstructor = SessionTraceReconstructor(self.event_store)
+        self.observability_service = ObservabilityService(
+            event_store=self.event_store,
+            audit_repository=self.audit_repository,
+            observability_repository=self.observability_repository,
+            session_reconstructor=self.session_trace_reconstructor,
+        )
         if self.settings.memory_repository == "postgres":
             self.context_provider = ContextEngine(
                 self.memory_repository,
