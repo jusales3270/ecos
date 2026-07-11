@@ -10,6 +10,13 @@ from ecos.decision import DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
 from ecos.domain.enums import SessionStatus
 from ecos.events import Event, EventBus, EventPriority, EventService, EventType
+from ecos.execution import (
+    ConnectorRegistry,
+    ExecutionEngine,
+    InMemoryHumanTaskProvider,
+    InMemoryIdempotencyProvider,
+    default_in_memory_connector,
+)
 from ecos.governance import (
     DefaultApprovalPolicyProvider,
     GovernanceConfig,
@@ -152,6 +159,7 @@ class CognitivePipeline:
         decision_service = DecisionService(decision_provider)
         learning_service = LearningService(memory_service, event_service)
         session_service = SessionService(session_repository)
+        execution_engine = _execution_engine(event_service)
         executors = {
             "context": ContextExecutor(context_service),
             "reasoning": ReasoningExecutor(reasoning_service),
@@ -161,7 +169,7 @@ class CognitivePipeline:
             "decision": DecisionExecutor(decision_service),
             "memory": LearningExecutor(learning_service),
             "governance": NoopExecutor("governance"),
-            "execution": ExecutionExecutor(),
+            "execution": ExecutionExecutor(execution_engine),
             "observation": NoopExecutor("observation"),
         }
         orchestrator = Orchestrator(
@@ -443,6 +451,7 @@ class CognitivePipeline:
             id_generator=uuid4,
             config=governance_config,
         )
+        execution_engine = _execution_engine(self.event_service)
         executors = {
             "context": ContextExecutor(self.context_service),
             "reasoning": ReasoningExecutor(self.reasoning_service),
@@ -460,7 +469,7 @@ class CognitivePipeline:
                 engine_type="learning",
             ),
             "governance": GovernanceExecutor(governance_engine),
-            "execution": ExecutionExecutor(),
+            "execution": ExecutionExecutor(execution_engine),
             "observation": NoopExecutor("observation"),
         }
         orchestrator = Orchestrator(
@@ -558,3 +567,19 @@ class RuntimeEngine:
     def run(self, objective: str) -> RuntimeResult:
         """Run the first executable ECOS cognitive pipeline."""
         return self.pipeline.run(objective)
+
+
+def _execution_engine(event_service: EventService) -> ExecutionEngine:
+    registry = ConnectorRegistry()
+    registry.register(default_in_memory_connector())
+    return ExecutionEngine(
+        connector_registry=registry,
+        idempotency_provider=InMemoryIdempotencyProvider(),
+        human_task_provider=InMemoryHumanTaskProvider(),
+        event_service=event_service,
+        clock=lambda: datetime.now(UTC),
+        id_generator=uuid4,
+        sleeper=asyncio.sleep,
+        concurrency_limit=1,
+        default_timeout_seconds=30.0,
+    )

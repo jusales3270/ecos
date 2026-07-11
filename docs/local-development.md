@@ -69,9 +69,21 @@ Políticas são versionadas, imutáveis e selecionadas de forma determinística 
 
 Os níveis de aprovação são Level 1 a Level 5. Level 1 pode liberar continuidade cognitiva de baixo risco e baixo impacto, mas execução externa sempre exige aprovação humana explícita. Estados de aprovação incluem `pending`, `partially_approved`, `granted`, `rejected`, `expired`, `revoked` e `cancelled`. Papéis, aprovadores distintos, quorum, rejeição, expiração e revogação são validados pelo Engine com uma identidade previamente validada pelo `IdentityPort`; login, JWT, OAuth e autenticação real não pertencem a esta sprint.
 
-O Runtime não chama Governance diretamente. Ele continua delegando ao Orchestrator, que executa o estágio `governance`, preserva o `GovernanceResult` e pausa em `waiting_approval` quando aprovação humana é obrigatória. A retomada usa estado retornável e decisão humana explícita, preservando outputs e timeline já concluídos. O executor de Execution permanece no-op seguro e rejeita autorização ausente, expirada ou de outra Organization, Session, Plan ou escopo.
+O Runtime não chama Governance diretamente. Ele continua delegando ao Orchestrator, que executa o estágio `governance`, preserva o `GovernanceResult` e pausa em `waiting_approval` quando aprovação humana é obrigatória. A retomada usa estado retornável e decisão humana explícita, preservando outputs e timeline já concluídos. Execution real só executa um `ExecutionRequest` estruturado com autorização compatível; autorização ausente, negada, expirada, revogada ou fora de Organization, Session, Plan e escopo é rejeitada.
 
 O `/runtime/demo` usa uma política determinística segura de continuidade, não solicita execução externa, não simula aprovação humana e preserva o resultado público: `status` igual a `completed`, recomendação `Proceed using ECOS context, reasoning, debate and governance.` e `confidence` `0.91`.
+
+## Execution local
+
+O Container registra `ExecutionEngine`, `ConnectorRegistry`, `InMemoryIdempotencyProvider`, `InMemoryHumanTaskProvider`, relógio UTC, gerador de IDs, sleeper/backoff e apenas connector em memória por padrão. A Execution Layer coordena somente as etapas internas de um `ExecutionPlan` aprovado; o Orchestrator continua coordenando o `CognitivePlan`.
+
+`dry_run` é o modo padrão e não produz efeito externo. `live` exige autorização explícita e connector com suporte a execução real; nenhum connector real de ERP, CRM, API HTTP, navegador, agente externo ou MCP foi adicionado nesta sprint. A suíte padrão usa somente conectores em memória, não exige PostgreSQL e não realiza chamadas externas.
+
+O plano operacional é imutável, tipado e validado como DAG: IDs e ordens únicos, dependências existentes e anteriores, sem ciclos, timeouts positivos, retry válido, parâmetros seguros e rollback somente quando declarado. Preconditions e validation rules usam operadores estruturados allowlisted, sem `eval`, `exec`, templates executáveis ou linguagem livre.
+
+Idempotência é em memória e usa fingerprint criptográfico determinístico sobre payload seguro. A mesma chave com o mesmo fingerprint retorna resultado anterior; a mesma chave com payload diferente gera conflito; retries reutilizam o escopo idempotente da etapa. Human execution cria tarefa humana e retorna `paused` com estado retomável. Rollback roda em ordem reversa apenas para etapas concluídas com ação de rollback explícita e autorização compatível.
+
+Artifacts são referências tipadas, não binários no resultado. Métricas, logs seguros e timeline são produzidos no `ExecutionResult`, ainda sem persistência. `/runtime/demo` permanece sem etapa externa de Execution e mantém exatamente o contrato público existente.
 
 ## Provider OpenAI opcional
 

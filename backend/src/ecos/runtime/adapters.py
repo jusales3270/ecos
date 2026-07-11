@@ -6,6 +6,19 @@ from typing import Any
 from ecos.context import ContextBuildRequest, ContextService
 from ecos.debate import Debate, DebateService
 from ecos.decision import DecisionContext, DecisionPackage, DecisionService
+from ecos.execution import (
+    ExecutionAuthorization,
+    ExecutionEngine,
+    ExecutionRequest,
+    ExecutionType,
+    ResourceRequirement,
+)
+from ecos.execution import (
+    ExecutionPlan as OperationalExecutionPlan,
+)
+from ecos.execution import (
+    ExecutionStep as OperationalExecutionStep,
+)
 from ecos.governance import (
     AuthorizationDecisionValue,
     GovernanceActionType,
@@ -340,12 +353,32 @@ class GovernanceExecutor(RuntimeEngineExecutor):
 
 
 class ExecutionExecutor(RuntimeEngineExecutor):
-    """Safe no-op execution adapter that requires valid governance authorization."""
+    """Adapter that delegates approved action execution to ExecutionEngine."""
 
-    def __init__(self) -> None:
+    def __init__(self, engine: ExecutionEngine) -> None:
         RuntimeEngineExecutor.__init__(self, "execution")
+        self._engine = engine
+
+    async def execute(self, context: EngineInvocationContext) -> EngineStageResult:
+        started_at = _now()
+        output = await self._engine.execute_async(self._request(context))
+        completed_at = _now()
+        return EngineStageResult(
+            stage_id=context.stage.stage_id,
+            engine=self.engine_type,
+            status=StageExecutionStatus.COMPLETED,
+            output=output,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration=max((completed_at - started_at).total_seconds(), 0.0),
+            attempt=context.attempt,
+            safe_metadata={"adapter": type(self).__name__},
+        )
 
     def _execute(self, context: EngineInvocationContext) -> Any:
+        return self._engine.execute(self._request(context))
+
+    def _request(self, context: EngineInvocationContext) -> ExecutionRequest:
         governance = context.accumulated_context.get("governance")
         if not isinstance(governance, GovernanceResult):
             raise RuntimeError("execution requires a GovernanceResult")
@@ -367,6 +400,108 @@ class ExecutionExecutor(RuntimeEngineExecutor):
             raise RuntimeError("governance is not authorized")
         if not governance.execution_authorized:
             raise RuntimeError("execution is not authorized")
+        execution_type = ExecutionType.SYSTEM
+        execution_plan = OperationalExecutionPlan(
+            execution_plan_id=context.stage.stage_id,
+            organization_id=context.session.session.organization_id,
+            session_id=context.session.session.id,
+            cognitive_plan_id=context.plan.plan_id,
+            authorization_id=authorization.authorization_id,
+            action_scope=authorization.action_scope,
+            execution_type=execution_type,
+            steps=(
+                OperationalExecutionStep(
+                    step_id=context.stage.stage_id,
+                    order=1,
+                    name="Approved dry-run execution",
+                    execution_type=execution_type,
+                    connector_id="memory.dry_run",
+                    required_capability="dry_run",
+                    action=authorization.action_scope,
+                    parameters={
+                        "cognitive_stage": context.stage.engine,
+                    },
+                    timeout_seconds=context.deadline_remaining_seconds,
+                    idempotency_scope="runtime_execution_stage",
+                    reason_codes=("runtime_adapter",),
+                ),
+            ),
+            resources=(
+                ResourceRequirement(
+                    resource_type="connector",
+                    identifier="memory.dry_run",
+                ),
+            ),
+            maximum_duration_seconds=context.deadline_remaining_seconds,
+            created_at=_now(),
+            reason_codes=("runtime_adapter",),
+            safe_metadata={"adapter": type(self).__name__},
+        )
+        execution_authorization = ExecutionAuthorization(
+            authorization_id=authorization.authorization_id,
+            governance_id=authorization.governance_id,
+            organization_id=authorization.organization_id,
+            session_id=authorization.session_id,
+            plan_id=authorization.plan_id,
+            execution_plan_id=execution_plan.execution_plan_id,
+            action_scope=authorization.action_scope,
+            approved_action=authorization.action_scope,
+            allowed_execution_types=(execution_type,),
+            allowed_connector_ids=("memory.dry_run",),
+            allowed_capabilities=("dry_run",),
+            policy_references=authorization.policy_references,
+            approval_evidence=tuple(
+                str(item.approval_decision_id)
+                for item in (
+                    governance.approval_state.decisions
+                    if governance.approval_state is not None
+                    else ()
+                )
+            ),
+            valid_from=authorization.valid_from,
+            valid_until=authorization.valid_until,
+            execution_authorized=authorization.execution_authorized,
+            live_authorized=False,
+            rollback_authorized=False,
+            issued_at=authorization.valid_from,
+        )
+        request = ExecutionRequest(
+            execution_request_id=context.stage.stage_id,
+            organization_id=context.session.session.organization_id,
+            session_id=context.session.session.id,
+            plan_id=context.plan.plan_id,
+            correlation_id=context.correlation_id,
+            approved_action=authorization.action_scope,
+            action_scope=authorization.action_scope,
+            execution_type=execution_type,
+            execution_plan=execution_plan,
+            authorization=execution_authorization,
+            approval_evidence=execution_authorization.approval_evidence,
+            policy_references=authorization.policy_references,
+            required_resources=execution_plan.resources,
+            dry_run=True,
+            idempotency_key=(
+                f"runtime:{context.session.session.id}:"
+                f"{context.plan.plan_id}:{context.stage.stage_id}"
+            ),
+            safe_metadata={"adapter": type(self).__name__},
+        )
+        return request
+
+
+class NoopExecutionExecutor(RuntimeEngineExecutor):
+    """Explicit test double preserving the former safe no-op behavior."""
+
+    def __init__(self) -> None:
+        RuntimeEngineExecutor.__init__(self, "execution")
+
+    def _execute(self, context: EngineInvocationContext) -> Any:
+        governance = context.accumulated_context.get("governance")
+        if not isinstance(governance, GovernanceResult):
+            raise RuntimeError("execution requires a GovernanceResult")
+        authorization = governance.authorization_decision
+        if authorization is None:
+            raise RuntimeError("execution requires authorization")
         return {
             "engine": self.engine_type,
             "session_id": str(context.session.session.id),
