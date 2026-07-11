@@ -3,7 +3,12 @@
 from abc import ABC, abstractmethod
 
 from ecos.debate import DebateResult
-from ecos.decision.models import DecisionPackage, ExecutiveBrief, Recommendation
+from ecos.decision.models import (
+    DecisionContext,
+    DecisionPackage,
+    ExecutiveBrief,
+    Recommendation,
+)
 from ecos.reasoning import ReasoningResult
 
 
@@ -15,6 +20,7 @@ class DecisionProvider(ABC):
         self,
         reasoning_result: ReasoningResult,
         debate_result: DebateResult,
+        decision_context: DecisionContext | None = None,
     ) -> Recommendation:
         """Build a recommendation from reasoning and debate outputs."""
         raise NotImplementedError

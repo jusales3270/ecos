@@ -281,3 +281,106 @@ class InvalidWarRiskError(WarResponseError):
 class WarProviderError(WarResponseError):
     def __init__(self) -> None:
         super().__init__("AI provider failed during simulation.", "WAR_PROVIDER_ERROR")
+
+
+class DecisionResponseError(EcosError):
+    """Base error for provider-backed decision support response failures."""
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message=message, code=code)
+
+
+class EmptyDecisionResponseError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an empty decision support response.",
+            "EMPTY_DECISION_RESPONSE",
+        )
+
+
+class InvalidDecisionResponseError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned invalid decision support JSON.",
+            "INVALID_DECISION_RESPONSE",
+        )
+
+
+class IncompatibleDecisionSchemaError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an incompatible decision support schema.",
+            "INCOMPATIBLE_DECISION_SCHEMA",
+        )
+
+
+class InvalidDecisionConfidenceError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid decision confidence.",
+            "INVALID_DECISION_CONFIDENCE",
+        )
+
+
+class InvalidStrategicAlignmentError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid strategic alignment.",
+            "INVALID_STRATEGIC_ALIGNMENT",
+        )
+
+
+class InvalidDecisionClassificationError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid recommendation classification.",
+            "INVALID_DECISION_CLASSIFICATION",
+        )
+
+
+class InvalidDecisionAlternativeError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid decision alternative.",
+            "INVALID_DECISION_ALTERNATIVE",
+        )
+
+
+class InvalidDecisionRiskError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid decision risk.",
+            "INVALID_DECISION_RISK",
+        )
+
+
+class MissingDecisionEvidenceError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned a recommendation without supporting evidence.",
+            "MISSING_DECISION_EVIDENCE",
+        )
+
+
+class UnauthorizedDecisionApprovalError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider indicated a decision was approved.",
+            "UNAUTHORIZED_DECISION_APPROVAL",
+        )
+
+
+class UnauthorizedExecutionApprovalError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider indicated execution was authorized.",
+            "UNAUTHORIZED_EXECUTION_APPROVAL",
+        )
+
+
+class DecisionProviderError(DecisionResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider failed during decision support.",
+            "DECISION_PROVIDER_ERROR",
+        )

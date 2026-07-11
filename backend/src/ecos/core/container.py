@@ -7,7 +7,7 @@ from ecos.context import ContextService
 from ecos.core.exceptions import ConfigurationError
 from ecos.core.settings import Settings
 from ecos.debate import AIDebateEngine, DebateService
-from ecos.decision import DecisionService
+from ecos.decision import AIDecisionSupportEngine, DecisionService
 from ecos.domain import Objective, Organization
 from ecos.events import EventService
 from ecos.learning import LearningService
@@ -131,10 +131,16 @@ class Container:
                 ai_provider_type,
                 self.settings.openai_model,
             )
+            self.decision_provider = AIDecisionSupportEngine(
+                registered_provider,
+                ai_provider_type,
+                self.settings.openai_model,
+            )
         else:
             self.reasoning_provider = FakeReasoningProvider()
             self.debate_provider = FakeDebateProvider()
             self.simulation_provider = FakeWarEngine()
+        self.decision_service = DecisionService(self.decision_provider)
         self.reasoning_service = ReasoningService(self.reasoning_provider)
         self.debate_service = DebateService(self.debate_provider)
         self.simulation_service = SimulationService(self.simulation_provider)

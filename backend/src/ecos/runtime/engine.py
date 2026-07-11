@@ -4,7 +4,7 @@ from uuid import UUID
 
 from ecos.context import ContextService
 from ecos.debate import Debate, DebateService
-from ecos.decision import DecisionService
+from ecos.decision import DecisionContext, DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
 from ecos.domain.enums import SessionStatus
 from ecos.events import Event, EventBus, EventPriority, EventService, EventType
@@ -318,17 +318,49 @@ class CognitivePipeline:
             active_engine="decision",
             progress=0.8,
         )
+        decision_context = DecisionContext(
+            session_id=session_id,
+            objective=execution.cognitive_session.objective.model_dump(mode="json"),
+            unified_context=context,
+            constraints=reasoning_context.constraints,
+            relevant_policies=[
+                element.content
+                for element in context.elements
+                if element.source_type.value == "POLICY"
+            ],
+            memory=[
+                item.model_dump(mode="json") for item in self.memory_service.list()
+            ],
+            reasoning_report=reasoning,
+            debate_report=debate_result,
+            simulation_report=simulation,
+            correlation_id=reasoning.correlation_id,
+        )
+        self._publish(
+            EventType.RECOMMENDATION_STARTED,
+            session_id,
+            {"status": "started"},
+        )
         recommendation = self.decision_service.build_recommendation(
             reasoning,
             debate_result,
+            decision_context,
         )
         executive_brief = self.decision_service.build_executive_brief(recommendation)
-        self.decision_service.build_decision_package(recommendation, executive_brief)
+        decision_package = self.decision_service.build_decision_package(
+            recommendation,
+            executive_brief,
+        )
         execution.recommendation = recommendation
         self._publish(
             EventType.RECOMMENDATION_CREATED,
             session_id,
-            {"confidence": recommendation.confidence},
+            {
+                "confidence": recommendation.confidence,
+                "alternative_count": len(recommendation.alternatives),
+                "risk_count": len(recommendation.risks),
+                **decision_package.metadata,
+            },
         )
 
         memory = self.learning_service.learn(

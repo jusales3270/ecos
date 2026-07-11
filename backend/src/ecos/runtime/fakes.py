@@ -21,6 +21,7 @@ from ecos.debate import (
 )
 from ecos.decision import (
     AlternativeAnalysis,
+    DecisionContext,
     DecisionImpact,
     DecisionPackage,
     DecisionProvider,
@@ -487,8 +488,10 @@ class FakeDecisionProvider(DecisionProvider):
         self,
         reasoning_result: ReasoningResult,
         debate_result: DebateResult,
+        decision_context: DecisionContext | None = None,
     ) -> Recommendation:
         """Build a deterministic executive recommendation."""
+        del debate_result, decision_context
         risk = RiskSummary(
             title="Execution governance",
             description="Governance is required before operational execution.",
