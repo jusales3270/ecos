@@ -7,7 +7,9 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ecos.reasoning.models import ReasoningResult
 from ecos.specialists import Specialist
+from ecos.specialists.models import Contribution
 
 DebateMetadataValue = str | int | float | bool | None
 
@@ -165,6 +167,13 @@ class Debate(DebateModel):
         default=DebateStatus.CREATED,
         description="Current debate status.",
     )
+    objective: str | None = Field(default=None, min_length=1)
+    unified_context: dict[str, object] = Field(default_factory=dict)
+    organizational_constraints: list[str] = Field(default_factory=list)
+    relevant_policies: list[str] = Field(default_factory=list)
+    reasoning_result: ReasoningResult | None = None
+    contributions: list[Contribution] = Field(default_factory=list)
+    correlation_id: UUID | None = None
 
 
 class DebateResult(DebateModel):
@@ -186,6 +195,7 @@ class DebateResult(DebateModel):
         le=1.0,
         description="Debate result confidence from 0.0 to 1.0.",
     )
+    metadata: dict[str, DebateMetadataValue] = Field(default_factory=dict)
 
     @field_validator("recommendations", "unresolved_questions")
     @classmethod

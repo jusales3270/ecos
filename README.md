@@ -74,11 +74,11 @@ A arquitetura inicial do Decision Support Engine está em `backend/src/ecos/deci
 
 ## Debate Engine
 
-A arquitetura inicial do Debate Engine está em `backend/src/ecos/debate/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa IA, prompts, OpenAI, Anthropic ou lógica de consenso.
+O Debate Engine preserva a implementação determinística quando `ECOS_AI_PROVIDER=fake`. Com `openai`, o Container resolve o provider pelo `ProviderRegistry` e o injeta no `AIDebateEngine`. Tanto Reasoning quanto Debate dependem somente do contrato genérico `AIProvider`; somente a camada de providers conhece o SDK. O Debate avalia o relatório de raciocínio e todas as contribuições independentes dos especialistas, preserva divergências, conflitos e perguntas abertas e não toma decisões nem autoriza execução. Chamadas externas só ocorrem quando OpenAI é configurada explicitamente, e nenhum segredo deve ser versionado.
 
 ## Specialist Framework
 
-A arquitetura inicial do Specialist Framework está em `backend/src/ecos/specialists/` e define apenas modelos, interface de provider, registry e serviço de orquestração por abstração. Esta camada ainda não implementa IA, prompts, OpenAI, Anthropic ou Debate.
+A arquitetura inicial do Specialist Framework está em `backend/src/ecos/specialists/` e define modelos, interface de provider, registry e serviço de orquestração por abstração. Os especialistas continuam papéis cognitivos independentes: não recebem `AIProvider` e não se comunicam diretamente entre si.
 
 ## Reasoning Engine
 

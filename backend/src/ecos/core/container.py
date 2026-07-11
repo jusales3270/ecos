@@ -6,7 +6,7 @@ from typing import Any
 from ecos.context import ContextService
 from ecos.core.exceptions import ConfigurationError
 from ecos.core.settings import Settings
-from ecos.debate import DebateService
+from ecos.debate import AIDebateEngine, DebateService
 from ecos.decision import DecisionService
 from ecos.domain import Objective, Organization
 from ecos.events import EventService
@@ -73,7 +73,6 @@ class Container:
         self.context_provider = FakeContextProvider(organization.id, objective)
         self.planner_provider = FakePlannerProvider()
         self.specialist_provider = FakeSpecialistProvider()
-        self.debate_provider = FakeDebateProvider()
         self.decision_provider = FakeDecisionProvider()
         self.orchestrator_provider = FakeOrchestratorProvider()
         self.ai_provider: AIProvider
@@ -106,7 +105,6 @@ class Container:
             self.specialist_provider,
             SpecialistRegistry(),
         )
-        self.debate_service = DebateService(self.debate_provider)
         self.decision_service = DecisionService(self.decision_provider)
         self.orchestrator_service = OrchestratorService(self.orchestrator_provider)
         self.provider_registry = ProviderRegistry()
@@ -121,9 +119,16 @@ class Container:
                 ai_provider_type,
                 self.settings.openai_model,
             )
+            self.debate_provider = AIDebateEngine(
+                registered_provider,
+                ai_provider_type,
+                self.settings.openai_model,
+            )
         else:
             self.reasoning_provider = FakeReasoningProvider()
+            self.debate_provider = FakeDebateProvider()
         self.reasoning_service = ReasoningService(self.reasoning_provider)
+        self.debate_service = DebateService(self.debate_provider)
         self.runtime_pipeline = CognitivePipeline(
             memory_repository=self.memory_repository,
             session_repository=self.session_repository,

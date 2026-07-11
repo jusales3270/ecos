@@ -142,3 +142,61 @@ class ReasoningProviderError(ReasoningResponseError):
         super().__init__(
             "AI provider failed during reasoning.", "REASONING_PROVIDER_ERROR"
         )
+
+
+class DebateResponseError(EcosError):
+    """Base error for provider-backed debate response failures."""
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message=message, code=code)
+
+
+class EmptyDebateResponseError(DebateResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an empty debate response.", "EMPTY_DEBATE_RESPONSE"
+        )
+
+
+class InvalidDebateResponseError(DebateResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned invalid debate JSON.", "INVALID_DEBATE_RESPONSE"
+        )
+
+
+class IncompatibleDebateSchemaError(DebateResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an incompatible debate schema.",
+            "INCOMPATIBLE_DEBATE_SCHEMA",
+        )
+
+
+class InvalidDebateConsensusError(DebateResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid debate consensus.",
+            "INVALID_DEBATE_CONSENSUS",
+        )
+
+
+class InvalidDebateConfidenceError(DebateResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid debate confidence.",
+            "INVALID_DEBATE_CONFIDENCE",
+        )
+
+
+class InvalidDebateSpecialistReferenceError(DebateResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider referenced an unknown debate specialist.",
+            "INVALID_DEBATE_SPECIALIST_REFERENCE",
+        )
+
+
+class DebateProviderError(DebateResponseError):
+    def __init__(self) -> None:
+        super().__init__("AI provider failed during debate.", "DEBATE_PROVIDER_ERROR")

@@ -5,7 +5,7 @@ from uuid import UUID
 import pytest
 
 from ecos.context import ContextProvider
-from ecos.debate import DebateProvider
+from ecos.debate import Debate, DebateProvider, DebateResult, DebateService
 from ecos.decision import DecisionProvider
 from ecos.events import EventBus, EventType
 from ecos.memory import MemoryRepository, MemoryType
@@ -30,6 +30,24 @@ from ecos.runtime import (
 )
 from ecos.session import SessionLifecycleStatus, SessionRepository, TransitionType
 from ecos.specialists import SpecialistProvider
+
+
+class CapturingDebateProvider(FakeDebateProvider):
+    """Capture the immutable debate input received from the runtime."""
+
+    received: Debate | None = None
+
+    def finalize(self, debate: Debate) -> DebateResult:
+        self.received = debate
+        return super().finalize(debate)
+
+
+class FailingDebateProvider(FakeDebateProvider):
+    """Fail finalization to verify event chronology."""
+
+    def finalize(self, debate: Debate) -> DebateResult:
+        del debate
+        raise RuntimeError("debate failed")
 
 
 def test_fake_runtime_implementations_satisfy_architecture_interfaces() -> None:
@@ -90,6 +108,7 @@ def test_cognitive_pipeline_with_fakes_executes_full_flow() -> None:
         EventType.REASONING_COMPLETED,
         EventType.SPECIALIST_CONTRIBUTED,
         EventType.SESSION_UPDATED,
+        EventType.DEBATE_STARTED,
         EventType.DEBATE_COMPLETED,
         EventType.SESSION_UPDATED,
         EventType.RECOMMENDATION_CREATED,
@@ -158,3 +177,30 @@ def test_runtime_delegates_permanent_memory_write_to_learning_engine() -> None:
         if envelope.event.event_type is EventType.MEMORY_UPDATED
     ]
     assert event_sources == ["learning"]
+
+
+def test_runtime_delivers_all_independent_contributions_to_debate() -> None:
+    pipeline = CognitivePipeline.with_fakes()
+    provider = CapturingDebateProvider()
+    pipeline.debate_service = DebateService(provider)
+
+    pipeline.run("Preserve specialist input")
+
+    assert provider.received is not None
+    assert len(provider.received.contributions) == len(provider.received.specialists)
+    assert {item.specialist_id for item in provider.received.contributions} == {
+        item.id for item in provider.received.specialists
+    }
+    assert provider.received.reasoning_result is not None
+
+
+def test_runtime_emits_debate_started_but_not_completed_on_failure() -> None:
+    pipeline = CognitivePipeline.with_fakes()
+    pipeline.debate_service = DebateService(FailingDebateProvider())
+
+    with pytest.raises(RuntimeError, match="debate failed"):
+        pipeline.run("Verify debate failure events")
+
+    event_types = [item.event.event_type for item in pipeline.event_bus.envelopes]
+    assert EventType.DEBATE_STARTED in event_types
+    assert EventType.DEBATE_COMPLETED not in event_types
