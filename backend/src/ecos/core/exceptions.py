@@ -51,3 +51,48 @@ class RuntimeExecutionError(EcosError):
             code="RUNTIME_EXECUTION_ERROR",
             details=details or {},
         )
+
+
+class AIProviderError(EcosError):
+    """Base error raised by an external AI provider adapter."""
+
+    def __init__(self, message: str, code: str = "AI_PROVIDER_ERROR") -> None:
+        """Initialize without provider SDK objects or sensitive details."""
+        super().__init__(message=message, code=code)
+
+
+class AIProviderAuthenticationError(AIProviderError):
+    """Raised when an AI provider rejects configured credentials."""
+
+    def __init__(self) -> None:
+        """Initialize a provider-neutral authentication error."""
+        super().__init__(
+            "AI provider authentication failed.", "AI_PROVIDER_AUTHENTICATION"
+        )
+
+
+class AIProviderRateLimitError(AIProviderError):
+    """Raised when an AI provider rate limit is reached."""
+
+    def __init__(self) -> None:
+        """Initialize a provider-neutral rate-limit error."""
+        super().__init__("AI provider rate limit exceeded.", "AI_PROVIDER_RATE_LIMIT")
+
+
+class AIProviderTimeoutError(AIProviderError):
+    """Raised when an AI provider request times out."""
+
+    def __init__(self) -> None:
+        """Initialize a provider-neutral timeout error."""
+        super().__init__("AI provider request timed out.", "AI_PROVIDER_TIMEOUT")
+
+
+class AIProviderUnsupportedOperationError(AIProviderError):
+    """Raised when a provider operation is intentionally unsupported."""
+
+    def __init__(self, operation: str) -> None:
+        """Initialize an unsupported-operation error."""
+        super().__init__(
+            f"AI provider operation is not supported: {operation}.",
+            "AI_PROVIDER_UNSUPPORTED_OPERATION",
+        )

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ecos.context import ContextService
+from ecos.core.exceptions import ConfigurationError
 from ecos.core.settings import Settings
 from ecos.debate import DebateService
 from ecos.decision import DecisionService
@@ -13,7 +14,14 @@ from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
 from ecos.orchestrator import OrchestratorService
 from ecos.planner import PlannerService
-from ecos.providers import AIService, ProviderRegistry, ProviderStatus, ProviderType
+from ecos.providers import (
+    AIProvider,
+    AIService,
+    OpenAIProvider,
+    ProviderRegistry,
+    ProviderStatus,
+    ProviderType,
+)
 from ecos.reasoning import ReasoningService
 from ecos.runtime import (
     CognitivePipeline,
@@ -69,7 +77,25 @@ class Container:
         self.debate_provider = FakeDebateProvider()
         self.decision_provider = FakeDecisionProvider()
         self.orchestrator_provider = FakeOrchestratorProvider()
-        self.ai_provider = FakeAIProvider()
+        self.ai_provider: AIProvider
+        ai_provider_type: ProviderType
+        if self.settings.ai_provider == "openai":
+            if not self.settings.openai_api_key:
+                raise ConfigurationError(
+                    "ECOS_OPENAI_API_KEY is required when ECOS_AI_PROVIDER=openai."
+                )
+            self.ai_provider = OpenAIProvider(
+                api_key=self.settings.openai_api_key,
+                model=self.settings.openai_model,
+                embedding_model=self.settings.openai_embedding_model,
+                timeout_seconds=self.settings.openai_timeout_seconds,
+                max_retries=self.settings.openai_max_retries,
+            )
+            ai_provider_type = ProviderType.OPENAI
+        else:
+            self.ai_provider = FakeAIProvider()
+            ai_provider_type = ProviderType.CUSTOM
+        self.ai_provider_type = ai_provider_type
 
         self.memory_service = MemoryService(self.memory_repository)
         self.event_service = EventService(self.event_bus)
@@ -86,7 +112,7 @@ class Container:
         self.decision_service = DecisionService(self.decision_provider)
         self.orchestrator_service = OrchestratorService(self.orchestrator_provider)
         self.ai_service = AIService(ProviderRegistry())
-        self.ai_service.register(ProviderType.CUSTOM, self.ai_provider, default=True)
+        self.ai_service.register(ai_provider_type, self.ai_provider, default=True)
         self.runtime_pipeline = CognitivePipeline(
             memory_repository=self.memory_repository,
             session_repository=self.session_repository,
@@ -110,11 +136,11 @@ class Container:
 
     def health(self) -> dict[str, Any]:
         """Return container, provider and runtime health information."""
-        provider_health = self.ai_service.health(ProviderType.CUSTOM)
+        provider_health = self.ai_service.health(self.ai_provider_type)
         return {
             "container": "ok",
             "providers": {
-                ProviderType.CUSTOM.value: provider_health.status
+                self.ai_provider_type.value: provider_health.status
                 is ProviderStatus.AVAILABLE,
             },
             "runtime": isinstance(self.runtime_engine, RuntimeEngine),

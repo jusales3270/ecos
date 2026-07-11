@@ -35,6 +35,32 @@ class Settings(BaseSettings):
         default="fake",
         description="Memory repository implementation used by the application.",
     )
+    ai_provider: Literal["fake", "openai"] = Field(
+        default="fake",
+        description="AI provider implementation used by the application.",
+    )
+    openai_api_key: str | None = Field(
+        default=None,
+        description="OpenAI API key. It must only be supplied through the environment.",
+    )
+    openai_model: str = Field(
+        default="gpt-4.1-mini",
+        description="OpenAI model used for text generation.",
+    )
+    openai_embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="OpenAI model used for embeddings.",
+    )
+    openai_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="OpenAI request timeout in seconds.",
+    )
+    openai_max_retries: int = Field(
+        default=2,
+        ge=0,
+        description="Maximum retries performed by the OpenAI client.",
+    )
 
     @field_validator("database_url")
     @classmethod

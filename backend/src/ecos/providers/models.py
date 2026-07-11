@@ -244,3 +244,7 @@ class AIResponse(ProviderModel):
         ge=0,
         description="Generation latency in milliseconds.",
     )
+    metadata: dict[str, ProviderMetadataValue] = Field(
+        default_factory=dict,
+        description="Provider-neutral response metadata.",
+    )

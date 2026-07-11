@@ -41,7 +41,30 @@ curl -X POST http://127.0.0.1:8000/runtime/demo \
   -d '{"objective":"Improve organizational decision quality"}'
 ```
 
-O fluxo demo usa providers Fake e, por padrão, repositórios em memória. O resultado cognitivo passa pelo Learning Engine antes de virar memória. Não há IA real, embeddings ou chamadas externas.
+O fluxo demo preserva o mesmo resultado público e usa providers cognitivos Fake e, por padrão, repositórios em memória. O resultado cognitivo passa pelo Learning Engine antes de virar memória.
+
+## Provider OpenAI opcional
+
+O provider de IA padrão é `fake`, portanto a instalação e a suíte padrão não precisam de credenciais nem fazem chamadas externas. Para selecionar o adaptador OpenAI no Container:
+
+```bash
+cd backend
+export ECOS_AI_PROVIDER=openai
+export ECOS_OPENAI_API_KEY='sua-chave-local'
+export ECOS_OPENAI_MODEL=gpt-4.1-mini
+export ECOS_OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+export ECOS_OPENAI_TIMEOUT_SECONDS=30
+export ECOS_OPENAI_MAX_RETRIES=2
+uv run uvicorn ecos.main:app --reload
+```
+
+Se `ECOS_AI_PROVIDER=openai` for definido sem `ECOS_OPENAI_API_KEY`, a inicialização falha com uma mensagem de configuração clara. O `/health` faz uma verificação controlada do modelo configurado e nunca retorna chaves, headers, prompts ou respostas. Não coloque chaves nos arquivos `.env.example` nem em arquivos versionados.
+
+O provider usa Responses API sem streaming, tools, buscas ou function calling. Embeddings atendem somente ao contrato do provider e não são conectados ao Memory Engine. O teste real é opcional:
+
+```bash
+ECOS_RUN_OPENAI_TESTS=1 ECOS_OPENAI_API_KEY='sua-chave-local' uv run pytest -k optional_real_openai
+```
 
 ## Persistência de sessões no PostgreSQL
 
