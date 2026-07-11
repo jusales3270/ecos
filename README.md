@@ -37,7 +37,7 @@ O primeiro fluxo cognitivo executável está em `backend/src/ecos/runtime/` e co
 
 ## AI Provider Abstraction
 
-A AI Provider Abstraction está em `backend/src/ecos/providers/` e mantém os Engines desacoplados de SDKs externos. O provider OpenAI usa o SDK oficial e a Responses API para geração de texto; `fake` continua sendo o padrão, inclusive para testes e para o runtime demo.
+A AI Provider Abstraction está em `backend/src/ecos/providers/` e mantém os Engines desacoplados de SDKs externos. O provider OpenAI usa o SDK oficial e a Responses API para geração de texto; `fake` continua sendo o padrão, inclusive para testes e para o runtime demo. Com `ECOS_AI_PROVIDER=openai`, o Container ativa as implementações provider-backed de Reasoning, Debate, War/Simulation e Decision Support, sempre por injeção do contrato genérico `AIProvider`.
 
 Para ativar a OpenAI, configure somente no ambiente local:
 
@@ -70,7 +70,9 @@ A arquitetura inicial do Cognitive Planner está em `backend/src/ecos/planner/` 
 
 ## Decision Support Engine
 
-A arquitetura inicial do Decision Support Engine está em `backend/src/ecos/decision/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa IA, prompts, OpenAI, Anthropic ou lógica de decisão.
+O Decision Support Engine está em `backend/src/ecos/decision/` e preserva a implementação determinística quando `ECOS_AI_PROVIDER=fake`, mantendo o resultado público de `/runtime/demo`. Com `ECOS_AI_PROVIDER=openai`, o Container recupera o provider pelo `ProviderRegistry` e injeta `AIDecisionSupportEngine`, que depende somente do contrato `AIProvider`.
+
+O Engine consolida Context, Reasoning Report, Debate Report e Simulation Report em uma recomendação executiva estruturada e explicável. Ele não decide, não aprova, não autoriza execução e não substitui governança ou liderança. `required_approvals` representa requisitos sugeridos para avaliação humana, não aprovações concedidas. Qualquer execução posterior exige governança e autorização fora deste Engine. Prompts e respostas completas não são persistidos, e chamadas externas só ocorrem quando OpenAI é explicitamente configurada com credencial local.
 
 ## Debate Engine
 

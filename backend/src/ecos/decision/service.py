@@ -1,7 +1,12 @@
 """Service layer for the ECOS Decision Support Engine architecture."""
 
 from ecos.debate import DebateResult
-from ecos.decision.models import DecisionPackage, ExecutiveBrief, Recommendation
+from ecos.decision.models import (
+    DecisionContext,
+    DecisionPackage,
+    ExecutiveBrief,
+    Recommendation,
+)
 from ecos.decision.provider import DecisionProvider
 from ecos.reasoning import ReasoningResult
 
@@ -17,9 +22,16 @@ class DecisionService:
         self,
         reasoning_result: ReasoningResult,
         debate_result: DebateResult,
+        decision_context: DecisionContext | None = None,
     ) -> Recommendation:
         """Build a recommendation through the provider abstraction."""
-        return self._provider.build_recommendation(reasoning_result, debate_result)
+        if decision_context is None:
+            return self._provider.build_recommendation(reasoning_result, debate_result)
+        return self._provider.build_recommendation(
+            reasoning_result,
+            debate_result,
+            decision_context,
+        )
 
     def build_executive_brief(
         self,

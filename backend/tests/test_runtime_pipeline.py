@@ -130,6 +130,7 @@ def test_cognitive_pipeline_with_fakes_executes_full_flow() -> None:
         EventType.SIMULATION_STARTED,
         EventType.SIMULATION_COMPLETED,
         EventType.SESSION_UPDATED,
+        EventType.RECOMMENDATION_STARTED,
         EventType.RECOMMENDATION_CREATED,
         EventType.LEARNING_STARTED,
         EventType.LEARNING_VALIDATED,

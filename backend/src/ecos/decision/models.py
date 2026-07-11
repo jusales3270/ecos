@@ -7,6 +7,11 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ecos.context import ContextObject
+from ecos.debate import DebateResult
+from ecos.reasoning import ReasoningResult
+from ecos.simulation import SimulationReport
+
 DecisionMetadataValue = str | int | float | bool | None
 
 
@@ -244,3 +249,31 @@ class DecisionPackage(DecisionModel):
             msg = "metadata keys cannot be blank"
             raise ValueError(msg)
         return value
+
+
+class DecisionContext(DecisionModel):
+    """Complete decision support input assembled from previous runtime stages."""
+
+    session_id: UUID = Field(description="Cognitive session identifier.")
+    objective: dict[str, object] = Field(description="Objective supplied to runtime.")
+    unified_context: ContextObject = Field(description="Unified runtime context.")
+    constraints: list[str] = Field(default_factory=list)
+    relevant_policies: list[str] = Field(default_factory=list)
+    memory: list[dict[str, object]] = Field(default_factory=list)
+    reasoning_report: ReasoningResult = Field(description="Complete reasoning report.")
+    debate_report: DebateResult = Field(description="Complete debate report.")
+    simulation_report: SimulationReport | None = Field(
+        default=None,
+        description="Complete simulation report when available.",
+    )
+    correlation_id: UUID | None = None
+
+    @field_validator("constraints", "relevant_policies")
+    @classmethod
+    def validate_text_items(cls, value: list[str]) -> list[str]:
+        """Normalize text list values and reject blanks."""
+        normalized = [item.strip() for item in value]
+        if any(item == "" for item in normalized):
+            msg = "text lists cannot contain blank values"
+            raise ValueError(msg)
+        return normalized
