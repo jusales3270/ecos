@@ -196,6 +196,7 @@ class DebateResult(DebateModel):
         description="Debate result confidence from 0.0 to 1.0.",
     )
     metadata: dict[str, DebateMetadataValue] = Field(default_factory=dict)
+    report: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("recommendations", "unresolved_questions")
     @classmethod

@@ -76,6 +76,14 @@ from ecos.session import (
     SessionState,
     SessionTransition,
 )
+from ecos.simulation import (
+    Contingency,
+    Scenario,
+    ScenarioType,
+    SimulationContext,
+    SimulationProvider,
+    SimulationReport,
+)
 from ecos.specialists import (
     Capability,
     Contribution,
@@ -411,6 +419,64 @@ class FakeDebateProvider(DebateProvider):
             recommendations=["Proceed with a governed execution plan."],
             unresolved_questions=[],
             confidence=0.91,
+        )
+
+
+class FakeWarEngine(SimulationProvider):
+    """Deterministic exploratory simulation used by fake/demo mode."""
+
+    def simulate(self, context: SimulationContext) -> SimulationReport:
+        scenarios = [
+            Scenario(
+                scenario_id=scenario_type.value,
+                scenario_type=scenario_type,
+                name=scenario_type.value.replace("_", " ").title(),
+                description="Deterministic exploratory scenario.",
+                assumptions=[],
+                trigger_conditions=[],
+                probability=probability,
+                early_warning_signals=[],
+                impacts={},
+                risks=[],
+                opportunities=[],
+                second_order_effects=[],
+                failure_modes=[],
+                success_factors=[],
+                mitigation_actions=[],
+                recovery_options=[],
+            )
+            for scenario_type, probability in (
+                (ScenarioType.BEST_CASE, 0.3),
+                (ScenarioType.EXPECTED_CASE, 0.6),
+                (ScenarioType.WORST_CASE, 0.2),
+                (ScenarioType.BLACK_SWAN, 0.01),
+            )
+        ]
+        return SimulationReport(
+            session_id=context.session_id,
+            objective=str(context.objective.get("title", "Runtime objective")),
+            critical_assumptions=[],
+            scenarios=scenarios,
+            cross_scenario_risks=[],
+            cross_scenario_opportunities=[],
+            second_order_effects=[],
+            failure_modes=[],
+            success_factors=[],
+            contingencies=[
+                Contingency(
+                    primary_plan="Proceed through governance.",
+                    fallback_plan="Pause and reassess.",
+                    emergency_plan="Stop execution.",
+                    recovery_plan="Restore the prior stable state.",
+                    exit_strategy="Exit through governance.",
+                    activation_conditions=["Material deviation"],
+                )
+            ],
+            resilience_score=0.8,
+            confidence=0.8,
+            executive_assessment=(
+                "Exploratory simulation; not a prediction or decision."
+            ),
         )
 
 

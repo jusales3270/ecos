@@ -33,3 +33,20 @@ def test_health_returns_backend_container_provider_and_runtime_status() -> None:
         "providers": {"CUSTOM": True},
         "runtime": True,
     }
+
+
+def test_runtime_demo_preserves_fake_public_contract() -> None:
+    """POST /runtime/demo remains deterministic in the default fake mode."""
+    with TestClient(app) as client:
+        response = client.post(
+            "/runtime/demo", json={"objective": "Improve decision quality"}
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert set(payload) == {"session_id", "status", "recommendation", "confidence"}
+    assert payload["status"] == "completed"
+    assert payload["recommendation"] == (
+        "Proceed using ECOS context, reasoning, debate and governance."
+    )
+    assert payload["confidence"] == 0.91

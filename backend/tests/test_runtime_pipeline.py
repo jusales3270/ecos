@@ -26,9 +26,11 @@ from ecos.runtime import (
     FakeReasoningProvider,
     FakeSessionRepository,
     FakeSpecialistProvider,
+    FakeWarEngine,
     RuntimeEngine,
 )
 from ecos.session import SessionLifecycleStatus, SessionRepository, TransitionType
+from ecos.simulation import SimulationContext, SimulationReport, SimulationService
 from ecos.specialists import SpecialistProvider
 
 
@@ -48,6 +50,20 @@ class FailingDebateProvider(FakeDebateProvider):
     def finalize(self, debate: Debate) -> DebateResult:
         del debate
         raise RuntimeError("debate failed")
+
+
+class CapturingWarEngine(FakeWarEngine):
+    received: SimulationContext | None = None
+
+    def simulate(self, context: SimulationContext) -> SimulationReport:
+        self.received = context
+        return super().simulate(context)
+
+
+class FailingWarEngine(FakeWarEngine):
+    def simulate(self, context: SimulationContext) -> SimulationReport:
+        del context
+        raise RuntimeError("simulation failed")
 
 
 def test_fake_runtime_implementations_satisfy_architecture_interfaces() -> None:
@@ -110,6 +126,9 @@ def test_cognitive_pipeline_with_fakes_executes_full_flow() -> None:
         EventType.SESSION_UPDATED,
         EventType.DEBATE_STARTED,
         EventType.DEBATE_COMPLETED,
+        EventType.SESSION_UPDATED,
+        EventType.SIMULATION_STARTED,
+        EventType.SIMULATION_COMPLETED,
         EventType.SESSION_UPDATED,
         EventType.RECOMMENDATION_CREATED,
         EventType.LEARNING_STARTED,
@@ -204,3 +223,30 @@ def test_runtime_emits_debate_started_but_not_completed_on_failure() -> None:
     event_types = [item.event.event_type for item in pipeline.event_bus.envelopes]
     assert EventType.DEBATE_STARTED in event_types
     assert EventType.DEBATE_COMPLETED not in event_types
+
+
+def test_runtime_delivers_complete_reasoning_and_debate_to_simulation() -> None:
+    pipeline = CognitivePipeline.with_fakes()
+    provider = CapturingWarEngine()
+    pipeline.simulation_service = SimulationService(provider)
+
+    pipeline.run("Preserve cognitive artifacts")
+
+    assert provider.received is not None
+    assert provider.received.reasoning_report.summary
+    assert provider.received.reasoning_report.hypotheses
+    assert provider.received.debate_report.consensus.agreements
+    assert provider.received.objective["title"] == "Preserve cognitive artifacts"
+    assert provider.received.unified_context
+
+
+def test_runtime_emits_simulation_started_but_not_completed_on_failure() -> None:
+    pipeline = CognitivePipeline.with_fakes()
+    pipeline.simulation_service = SimulationService(FailingWarEngine())
+
+    with pytest.raises(RuntimeError, match="simulation failed"):
+        pipeline.run("Verify simulation failure events")
+
+    event_types = [item.event.event_type for item in pipeline.event_bus.envelopes]
+    assert event_types.count(EventType.SIMULATION_STARTED) == 1
+    assert EventType.SIMULATION_COMPLETED not in event_types

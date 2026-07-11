@@ -60,13 +60,15 @@ uv run uvicorn ecos.main:app --reload
 
 Se `ECOS_AI_PROVIDER=openai` for definido sem `ECOS_OPENAI_API_KEY`, a inicialização
 falha com uma mensagem de configuração clara. Essa seleção também ativa os Engines de
-Reasoning e Debate provider-backed; o Container resolve e injeta o provider pelo registry,
+Reasoning, Debate e War provider-backed; o Container resolve e injeta o provider pelo registry,
 enquanto os Engines permanecem independentes da OpenAI e do SDK. O Debate recebe as
 contribuições independentes dos especialistas, preserva divergências e não toma decisões.
 Chamadas reais só ocorrem com OpenAI
 explicitamente selecionada e configurada. O `/health` faz uma verificação controlada do
 modelo configurado e nunca retorna chaves, headers, prompts ou respostas. Não coloque
 chaves nos arquivos `.env.example` nem em arquivos versionados.
+
+O War Engine recebe contexto, memória do ciclo e os relatórios completos de Reasoning e Debate. Ele explora cenários possíveis — incluindo worst case e black swan — sem suprimir riscos desfavoráveis e sem apresentar a simulação como previsão. A decisão, aprovação e autorização de execução permanecem humanas. O modo `fake` continua determinístico, não exige credenciais e não realiza chamadas externas.
 
 O provider usa Responses API sem streaming, tools, buscas ou function calling. Embeddings atendem somente ao contrato do provider e não são conectados ao Memory Engine. O teste real é opcional:
 

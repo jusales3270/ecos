@@ -197,6 +197,7 @@ class AIReasoningEngine(ReasoningProvider):
             confidence=report.confidence,
             summary=report.summary,
             metadata=metadata,
+            report=report.model_dump(mode="json"),
         )
 
     def generate_hypotheses(self, context: ReasoningContext) -> list[Hypothesis]:
