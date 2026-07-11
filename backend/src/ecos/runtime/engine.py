@@ -196,12 +196,19 @@ class CognitivePipeline:
             context=context,
             reasoning_type=ReasoningType.STRATEGIC,
         )
+        self._publish(
+            EventType.REASONING_STARTED,
+            session_id,
+            {"status": "started"},
+        )
         reasoning = self.reasoning_service.analyze(reasoning_context)
         execution.reasoning = reasoning
+        completed_payload = {"confidence": reasoning.confidence}
+        completed_payload.update(reasoning.metadata)
         self._publish(
             EventType.REASONING_COMPLETED,
             session_id,
-            {"confidence": reasoning.confidence},
+            completed_payload,
         )
 
         specialists = self.specialist_service.load()

@@ -170,8 +170,16 @@ class ReasoningContext(ReasoningModel):
         default_factory=list,
         description="Explicit constraints for the reasoning operation.",
     )
+    memory: list[str] = Field(
+        default_factory=list,
+        description="Memory explicitly supplied to the reasoning operation.",
+    )
+    specialist_contributions: list[str] = Field(
+        default_factory=list,
+        description="Optional specialist contributions available before reasoning.",
+    )
 
-    @field_validator("constraints")
+    @field_validator("constraints", "memory", "specialist_contributions")
     @classmethod
     def validate_constraints(cls, value: list[str]) -> list[str]:
         """Normalize constraints and reject blank values."""
@@ -213,4 +221,8 @@ class ReasoningResult(ReasoningModel):
         min_length=1,
         max_length=5000,
         description="Human-readable reasoning summary.",
+    )
+    metadata: dict[str, ReasoningMetadataValue] = Field(
+        default_factory=dict,
+        description="Safe internal observability metadata.",
     )

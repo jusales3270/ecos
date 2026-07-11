@@ -96,3 +96,49 @@ class AIProviderUnsupportedOperationError(AIProviderError):
             f"AI provider operation is not supported: {operation}.",
             "AI_PROVIDER_UNSUPPORTED_OPERATION",
         )
+
+
+class ReasoningResponseError(EcosError):
+    """Base error for provider-backed cognitive response failures."""
+
+    def __init__(self, message: str, code: str) -> None:
+        """Initialize without including raw provider content."""
+        super().__init__(message=message, code=code)
+
+
+class EmptyReasoningResponseError(ReasoningResponseError):
+    """Raised when the provider returns no cognitive response."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an empty reasoning response.",
+            "EMPTY_REASONING_RESPONSE",
+        )
+
+
+class InvalidReasoningResponseError(ReasoningResponseError):
+    """Raised when cognitive response JSON cannot be parsed."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned invalid reasoning JSON.", "INVALID_REASONING_RESPONSE"
+        )
+
+
+class IncompatibleReasoningSchemaError(ReasoningResponseError):
+    """Raised when cognitive response data violates the internal schema."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an incompatible reasoning schema.",
+            "INCOMPATIBLE_REASONING_SCHEMA",
+        )
+
+
+class ReasoningProviderError(ReasoningResponseError):
+    """Raised when the injected AI provider fails during reasoning."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider failed during reasoning.", "REASONING_PROVIDER_ERROR"
+        )

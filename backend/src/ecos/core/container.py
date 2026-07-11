@@ -22,7 +22,7 @@ from ecos.providers import (
     ProviderStatus,
     ProviderType,
 )
-from ecos.reasoning import ReasoningService
+from ecos.reasoning import AIReasoningEngine, ReasoningService
 from ecos.runtime import (
     CognitivePipeline,
     FakeAIProvider,
@@ -72,7 +72,6 @@ class Container:
             self.session_repository = FakeSessionRepository()
         self.context_provider = FakeContextProvider(organization.id, objective)
         self.planner_provider = FakePlannerProvider()
-        self.reasoning_provider = FakeReasoningProvider()
         self.specialist_provider = FakeSpecialistProvider()
         self.debate_provider = FakeDebateProvider()
         self.decision_provider = FakeDecisionProvider()
@@ -103,7 +102,6 @@ class Container:
         self.session_service = SessionService(self.session_repository)
         self.context_service = ContextService(self.context_provider)
         self.planner_service = PlannerService(self.planner_provider)
-        self.reasoning_service = ReasoningService(self.reasoning_provider)
         self.specialist_service = SpecialistService(
             self.specialist_provider,
             SpecialistRegistry(),
@@ -111,8 +109,21 @@ class Container:
         self.debate_service = DebateService(self.debate_provider)
         self.decision_service = DecisionService(self.decision_provider)
         self.orchestrator_service = OrchestratorService(self.orchestrator_provider)
-        self.ai_service = AIService(ProviderRegistry())
+        self.provider_registry = ProviderRegistry()
+        self.ai_service = AIService(self.provider_registry)
         self.ai_service.register(ai_provider_type, self.ai_provider, default=True)
+        registered_provider = self.provider_registry.get(ai_provider_type)
+        if registered_provider is None:
+            raise ConfigurationError("Configured AI provider was not registered.")
+        if self.settings.ai_provider == "openai":
+            self.reasoning_provider = AIReasoningEngine(
+                registered_provider,
+                ai_provider_type,
+                self.settings.openai_model,
+            )
+        else:
+            self.reasoning_provider = FakeReasoningProvider()
+        self.reasoning_service = ReasoningService(self.reasoning_provider)
         self.runtime_pipeline = CognitivePipeline(
             memory_repository=self.memory_repository,
             session_repository=self.session_repository,

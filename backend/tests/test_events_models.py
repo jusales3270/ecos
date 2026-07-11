@@ -71,6 +71,7 @@ def test_event_type_values() -> None:
         "SESSION_COMPLETED",
         "MEMORY_UPDATED",
         "CONTEXT_CREATED",
+        "REASONING_STARTED",
         "REASONING_COMPLETED",
         "SPECIALIST_CONTRIBUTED",
         "DEBATE_COMPLETED",
