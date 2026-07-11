@@ -1,8 +1,8 @@
 """Structured logging helpers for ECOS."""
 
-from contextvars import ContextVar
 import json
 import logging
+from contextvars import ContextVar
 from typing import Any
 from uuid import uuid4
 

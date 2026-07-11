@@ -4,8 +4,11 @@ import json
 import logging
 
 from ecos.core import Container, DependencyNotFoundError, Settings
-from ecos.core.logging import StructuredJsonFormatter, get_correlation_id
-from ecos.core.logging import set_correlation_id
+from ecos.core.logging import (
+    StructuredJsonFormatter,
+    get_correlation_id,
+    set_correlation_id,
+)
 from ecos.runtime import RuntimeEngine
 
 
@@ -30,7 +33,7 @@ def test_container_registers_services_fake_providers_and_runtime() -> None:
     health = container.health()
 
     assert isinstance(container.runtime_engine, RuntimeEngine)
-
+    assert container.runtime_engine.pipeline is container.runtime_pipeline
     assert container.memory_service is not None
     assert container.context_service is not None
     assert container.event_service is not None

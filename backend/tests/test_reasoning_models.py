@@ -360,7 +360,6 @@ def test_reasoning_service_uses_provider_abstraction() -> None:
     assert service.analyze(context) == result
     assert service.generate_hypotheses(context) == result.hypotheses
     assert (
-        service.evaluate_alternatives(context, result.hypotheses)
-        == result.alternatives
+        service.evaluate_alternatives(context, result.hypotheses) == result.alternatives
     )
     assert service.calculate_confidence(result) == result.confidence

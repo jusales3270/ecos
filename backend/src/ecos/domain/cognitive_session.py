@@ -13,7 +13,9 @@ class CognitiveSession(DomainEntity):
     """Represents the state of an ECOS cognitive workflow session."""
 
     organization_id: UUID = Field(description="Organization that owns the session.")
-    objective: Objective = Field(description="Objective being evaluated in the session.")
+    objective: Objective = Field(
+        description="Objective being evaluated in the session."
+    )
     status: SessionStatus = Field(
         default=SessionStatus.CREATED,
         description="Current session lifecycle status.",

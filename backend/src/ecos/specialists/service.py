@@ -1,5 +1,7 @@
 """Service layer for the ECOS Specialist Framework architecture."""
 
+from __future__ import annotations
+
 from uuid import UUID
 
 from ecos.specialists.models import Contribution, Specialist, SpecialistType

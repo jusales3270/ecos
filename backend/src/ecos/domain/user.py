@@ -31,7 +31,11 @@ class User(DomainEntity):
     def validate_email(cls, value: str) -> str:
         """Validate and normalize the user email address."""
         normalized = value.lower()
-        if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+        if (
+            "@" not in normalized
+            or normalized.startswith("@")
+            or normalized.endswith("@")
+        ):
             msg = "email must be a valid email address"
             raise ValueError(msg)
         return normalized
