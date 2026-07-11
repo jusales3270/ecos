@@ -77,7 +77,11 @@ A arquitetura inicial do Context Engine está em `backend/src/ecos/context/` e d
 
 ## Memory Engine
 
-A arquitetura inicial do Memory Engine está em `backend/src/ecos/memory/` e define apenas modelos, interface de repositório e serviço de orquestração por abstração. Esta camada ainda não implementa PostgreSQL, pgvector, busca vetorial, embeddings ou LLM.
+O Memory Engine preserva o contrato `MemoryRepository` e oferece persistência em PostgreSQL via SQLAlchemy 2 e asyncpg. O fake continua como padrão; defina `ECOS_MEMORY_REPOSITORY=postgres` para persistência permanente. Este estágio não implementa pgvector, busca vetorial, embeddings ou LLM.
+
+## Learning Engine
+
+O Learning Engine em `backend/src/ecos/learning/` é a fronteira obrigatória para criação ou atualização permanente de memória organizacional. Ele aplica uma política determinística (evidência presente e confiança mínima de `0.5`), preserva origem, evidência, confiança e sessão, publica os eventos de aprendizado existentes e só então entrega aprendizados aprovados ao Memory Engine. O runtime e os demais motores não gravam memória diretamente.
 
 ## Backend
 

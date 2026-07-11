@@ -41,7 +41,7 @@ curl -X POST http://127.0.0.1:8000/runtime/demo \
   -d '{"objective":"Improve organizational decision quality"}'
 ```
 
-O fluxo demo usa apenas providers Fake/InMemory e não executa IA real, banco, embeddings ou chamadas externas.
+O fluxo demo usa providers Fake e, por padrão, repositórios em memória. O resultado cognitivo passa pelo Learning Engine antes de virar memória. Não há IA real, embeddings ou chamadas externas.
 
 ## Persistência de sessões no PostgreSQL
 
@@ -51,11 +51,14 @@ O repositório fake é o padrão. Para usar PostgreSQL no container da aplicaç�
 cd backend
 export ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos
 export ECOS_SESSION_REPOSITORY=postgres
+export ECOS_MEMORY_REPOSITORY=postgres
 uv run alembic upgrade head
 uv run uvicorn ecos.main:app --reload
 ```
 
-Para reverter a migration inicial:
+`ECOS_SESSION_REPOSITORY` e `ECOS_MEMORY_REPOSITORY` podem ser configurados independentemente como `fake` ou `postgres`; ambos usam `fake` por padrão.
+
+Para reverter todas as migrations:
 
 ```bash
 cd backend
@@ -68,3 +71,5 @@ Os testes de integração ficam ignorados sem configuração. Use um banco desca
 cd backend
 ECOS_TEST_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos uv run pytest
 ```
+
+Esse comando habilita os testes condicionais dos repositórios PostgreSQL de sessões e memórias. A migration `20260711_02` cria `memories` após a migration de sessões; ela pode ser validada isoladamente com `alembic downgrade 20260711_01` e `alembic upgrade head`.

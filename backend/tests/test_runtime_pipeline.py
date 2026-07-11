@@ -92,7 +92,10 @@ def test_cognitive_pipeline_with_fakes_executes_full_flow() -> None:
         EventType.DEBATE_COMPLETED,
         EventType.SESSION_UPDATED,
         EventType.RECOMMENDATION_CREATED,
+        EventType.LEARNING_STARTED,
+        EventType.LEARNING_VALIDATED,
         EventType.MEMORY_UPDATED,
+        EventType.LEARNING_COMPLETED,
         EventType.SESSION_UPDATED,
         EventType.SESSION_COMPLETED,
     ]
@@ -116,6 +119,7 @@ def test_pipeline_factory_does_not_duplicate_repositories_or_event_bus() -> None
     pipeline = CognitivePipeline.with_fakes()
 
     assert pipeline.memory_service._repository is pipeline.memory_repository
+    assert pipeline.learning_service._memory_service is pipeline.memory_service
     assert pipeline.session_service._repository is pipeline.session_repository
     assert pipeline.event_service._event_bus is pipeline.event_bus
     assert pipeline.context_service._provider is pipeline.context_provider
@@ -139,3 +143,17 @@ def test_fake_ai_provider_is_registered_as_default_provider() -> None:
     assert isinstance(provider, FakeAIProvider)
     assert health.provider is ProviderType.CUSTOM
     assert health.status is ProviderStatus.AVAILABLE
+
+
+def test_runtime_delegates_permanent_memory_write_to_learning_engine() -> None:
+    """Runtime emits a learning boundary before the repository receives memory."""
+    pipeline = CognitivePipeline.with_fakes()
+
+    pipeline.run("Learn only through the validated boundary")
+
+    event_sources = [
+        envelope.event.source
+        for envelope in pipeline.event_bus.envelopes
+        if envelope.event.event_type is EventType.MEMORY_UPDATED
+    ]
+    assert event_sources == ["learning"]

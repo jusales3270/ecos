@@ -8,7 +8,8 @@ from ecos.decision import DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
 from ecos.domain.enums import SessionStatus
 from ecos.events import Event, EventBus, EventPriority, EventService, EventType
-from ecos.memory import MemoryObject, MemoryRepository, MemoryService, MemoryType
+from ecos.learning import LearningObject, LearningService
+from ecos.memory import MemoryRepository, MemoryService, MemoryType
 from ecos.orchestrator import (
     ExecutionMode,
     ExecutionPlan,
@@ -60,6 +61,7 @@ class CognitivePipeline:
         context_provider: FakeContextProvider,
         ai_provider: AIProvider,
         memory_service: MemoryService,
+        learning_service: LearningService,
         session_service: SessionService,
         event_service: EventService,
         context_service: ContextService,
@@ -78,6 +80,7 @@ class CognitivePipeline:
         self.context_provider = context_provider
         self.ai_provider = ai_provider
         self.memory_service = memory_service
+        self.learning_service = learning_service
         self.session_service = session_service
         self.event_service = event_service
         self.context_service = context_service
@@ -107,15 +110,18 @@ class CognitivePipeline:
         ai_service = AIService(ProviderRegistry())
         ai_service.register(ProviderType.CUSTOM, ai_provider, default=True)
 
+        memory_service = MemoryService(memory_repository)
+        event_service = EventService(event_bus)
         return cls(
             memory_repository=memory_repository,
             session_repository=session_repository,
             event_bus=event_bus,
             context_provider=context_provider,
             ai_provider=ai_provider,
-            memory_service=MemoryService(memory_repository),
+            memory_service=memory_service,
+            learning_service=LearningService(memory_service, event_service),
             session_service=SessionService(session_repository),
-            event_service=EventService(event_bus),
+            event_service=event_service,
             context_service=ContextService(context_provider),
             planner_service=PlannerService(planner_provider),
             reasoning_service=ReasoningService(reasoning_provider),
@@ -250,22 +256,21 @@ class CognitivePipeline:
             {"confidence": recommendation.confidence},
         )
 
-        memory = self.memory_service.store(
-            MemoryObject(
-                type=MemoryType.EPISODIC,
+        memory = self.learning_service.learn(
+            LearningObject(
+                session_id=session_id,
+                memory_type=MemoryType.EPISODIC,
                 title="Runtime cognitive pipeline completed",
                 description=recommendation.summary,
+                evidence=[reasoning.summary, *debate_result.recommendations],
                 tags=["runtime", "demo", "cognitive-pipeline"],
                 confidence=recommendation.confidence,
-                source="runtime",
+                origin="runtime",
             )
         )
+        if memory is None:
+            raise RuntimeError("runtime learning was rejected")
         execution.memory = memory
-        self._publish(
-            EventType.MEMORY_UPDATED,
-            session_id,
-            {"memory_id": str(memory.id)},
-        )
 
         self._update_session_state(
             execution,
