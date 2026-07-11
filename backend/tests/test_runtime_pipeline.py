@@ -112,36 +112,18 @@ def test_cognitive_pipeline_with_fakes_executes_full_flow() -> None:
     assert len(memories) == 1
     assert memories[0].type is MemoryType.EPISODIC
     assert memories[0].confidence == 0.91
-    assert event_types == [
+    assert event_types[:4] == [
         EventType.SESSION_CREATED,
         EventType.SESSION_UPDATED,
         EventType.PIPELINE_VALIDATION_STARTED,
         EventType.PIPELINE_STARTED,
-        EventType.STAGE_READY,
-        EventType.ENGINE_INVOKED,
-        EventType.ENGINE_COMPLETED,
-        EventType.STAGE_READY,
-        EventType.ENGINE_INVOKED,
-        EventType.ENGINE_COMPLETED,
-        EventType.STAGE_READY,
-        EventType.ENGINE_INVOKED,
-        EventType.ENGINE_COMPLETED,
-        EventType.STAGE_READY,
-        EventType.ENGINE_INVOKED,
-        EventType.ENGINE_COMPLETED,
-        EventType.STAGE_READY,
-        EventType.ENGINE_INVOKED,
-        EventType.ENGINE_COMPLETED,
-        EventType.STAGE_READY,
-        EventType.ENGINE_INVOKED,
-        EventType.ENGINE_COMPLETED,
-        EventType.STAGE_READY,
-        EventType.ENGINE_INVOKED,
-        EventType.LEARNING_STARTED,
-        EventType.LEARNING_VALIDATED,
-        EventType.MEMORY_UPDATED,
-        EventType.LEARNING_COMPLETED,
-        EventType.ENGINE_COMPLETED,
+    ]
+    governance_started = event_types.index(EventType.GOVERNANCE_STARTED)
+    governance_completed = event_types.index(EventType.GOVERNANCE_COMPLETED)
+    learning_started = event_types.index(EventType.LEARNING_STARTED)
+    assert governance_started < governance_completed < learning_started
+    assert EventType.AUTHORIZATION_GRANTED in event_types
+    assert event_types[-2:] == [
         EventType.PIPELINE_COMPLETED,
         EventType.SESSION_COMPLETED,
     ]

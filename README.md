@@ -70,6 +70,18 @@ São suportados modos sequencial, paralelo e condicional. A execução paralela 
 
 Falhas de estágios obrigatórios interrompem dependentes e produzem `FailureReport` seguro. Estágios opcionais só viram `skipped` quando a política permite. Execution permanece bloqueado sem Governance satisfeita e aprovação humana explícita compatível com `organization_id`, `session_id` e `plan_id`; ausência de aprovação retorna estado `waiting_approval` retomável, preservando outputs já concluídos e timeline append-only.
 
+## Governance Engine
+
+O Governance Engine real está em `backend/src/ecos/governance/` e valida se a cognição pode prosseguir. Ele não raciocina sobre o problema, não gera hipóteses, não cria recomendação, não toma decisão empresarial, não chama LLM, não acessa banco, não acessa ambiente, não conhece o Container e não executa ações externas. Todas as dependências entram por injeção: `PolicyProvider`, `ApprovalPolicyProvider`, `IdentityPort`, `EventService`, relógio, gerador de IDs e configuração imutável.
+
+Políticas organizacionais são imutáveis, versionadas, escopadas por `organization_id` e selecionadas de forma determinística por vigência, status `active`, ação aplicável, prioridade, `policy_id` e versão. Políticas expiradas, ausentes ou versões ativas ambíguas não são ignoradas. Regras usam somente operadores estruturados allowlisted (`equals`, comparações numéricas, `in`, `contains`, `exists`, `all`, `any`, `not` e equivalentes negativos), sem `eval`, templates executáveis ou linguagem arbitrária.
+
+O resultado inclui `ComplianceReport`, `ExplainabilityReport`, violações seguras, autorização escopada por Organization, Session, Plan e ação, requisitos de aprovação, request de aprovação quando necessário e audit trail append-only em memória para persistência futura. Explainability exige objetivo, evidência, resumo de raciocínio, assumptions, riscos, alternativas, confidence 0–1, lacunas e recomendação; o Engine valida presença, estrutura e rastreabilidade básica, não a qualidade intelectual do raciocínio.
+
+Os níveis oficiais de aprovação são Level 1 a Level 5. Level 1 pode autorizar automaticamente continuidade cognitiva de baixo risco e baixo impacto, mas não autoriza execução externa. Execution sempre exige autorização válida e aprovação humana explícita quando solicitada. Requests de aprovação passam pelos estados `pending`, `partially_approved`, `granted`, `rejected`, `expired`, `revoked` e `cancelled`; uma pessoa não conta duas vezes, papéis e quorum são validados, rejeição bloqueia e revogação invalida autorização dependente. A autenticação real não foi implementada: o `IdentityPort` consome uma identidade previamente validada por uma porta injetada.
+
+O Runtime continua delegando ao Orchestrator. O Orchestrator invoca Governance como estágio do plano, preserva o `GovernanceResult`, entra em `waiting_approval` quando houver aprovação pendente e não transforma pending em granted. A Execution Layer real fica para sprint posterior; o executor atual permanece no-op seguro e rejeita ausência, expiração ou incompatibilidade de autorização. `/runtime/demo` continua retornando `status="completed"`, `recommendation="Proceed using ECOS context, reasoning, debate and governance."` e `confidence=0.91`, sem simular aprovação humana.
+
 ## Cognitive Planner
 
 O Cognitive Planner real está em `backend/src/ecos/planner/` e planeja como o E.C.O.S. deverá pensar antes do Context Engine. Ele cria um `CognitivePlan` tipado, imutável e explicável com classificação do objetivo, complexidade, risco, estratégia cognitiva, Engines, especialistas, dependências, estimativas relativas, meta de confiança e requisitos de governança.

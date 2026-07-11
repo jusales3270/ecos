@@ -6,6 +6,15 @@ from typing import Any
 from ecos.context import ContextBuildRequest, ContextService
 from ecos.debate import Debate, DebateService
 from ecos.decision import DecisionContext, DecisionPackage, DecisionService
+from ecos.governance import (
+    AuthorizationDecisionValue,
+    GovernanceActionType,
+    GovernanceEngine,
+    GovernanceRequest,
+    GovernanceResult,
+    GovernanceResultStatus,
+    ImpactLevel,
+)
 from ecos.learning import LearningObject, LearningService
 from ecos.memory import MemoryType
 from ecos.orchestrator import (
@@ -14,6 +23,7 @@ from ecos.orchestrator import (
     EngineStageResult,
     StageExecutionStatus,
 )
+from ecos.planner import RiskLevel
 from ecos.reasoning import ReasoningContext, ReasoningService, ReasoningType
 from ecos.simulation import SimulationContext, SimulationService
 from ecos.specialists import SpecialistService
@@ -272,6 +282,100 @@ class LearningExecutor(RuntimeEngineExecutor):
         )
 
 
+class GovernanceExecutor(RuntimeEngineExecutor):
+    """Run the real GovernanceEngine without performing cognition."""
+
+    def __init__(self, engine: GovernanceEngine) -> None:
+        super().__init__("governance")
+        self._engine = engine
+
+    def _execute(self, context: EngineInvocationContext) -> GovernanceResult:
+        decision_package = context.accumulated_context.get(
+            "decision"
+        ) or context.accumulated_context.get("decision_support")
+        if decision_package is None:
+            raise RuntimeError("decision output is required before governance")
+        execution_requested = any(
+            step.engine == "execution" for step in context.plan.pipeline.steps
+        )
+        action_type = (
+            GovernanceActionType.EXECUTION
+            if execution_requested
+            else GovernanceActionType.CONTINUATION
+        )
+        request = GovernanceRequest(
+            governance_id=context.stage.stage_id,
+            session_id=context.session.session.id,
+            organization_id=context.session.session.organization_id,
+            plan_id=context.plan.plan_id,
+            correlation_id=context.correlation_id,
+            cognitive_plan=context.plan,
+            current_stage=context.stage.engine,
+            requested_action="runtime_execution"
+            if execution_requested
+            else "runtime_continuation",
+            action_type=action_type,
+            decision_package=decision_package,
+            execution_requested=execution_requested,
+            risk_level=(
+                context.plan.risk_level if execution_requested else RiskLevel.LOW
+            ),
+            impact_level=_impact_from_decision(decision_package)
+            if execution_requested
+            else ImpactLevel.LOW,
+            affected_domains=(),
+            applicable_policy_ids=tuple(
+                context.plan.governance_requirements.policy_checks
+            ),
+            policy_context={
+                "runtime": bool(context.safe_metadata.get("runtime")),
+                "confidence_target": context.plan.confidence_target,
+            },
+            resources=tuple(step.engine for step in context.plan.pipeline.steps),
+            reversibility=True,
+            rollback_available=True,
+            metadata={"adapter": type(self).__name__},
+        )
+        return self._engine.evaluate(request)
+
+
+class ExecutionExecutor(RuntimeEngineExecutor):
+    """Safe no-op execution adapter that requires valid governance authorization."""
+
+    def __init__(self) -> None:
+        RuntimeEngineExecutor.__init__(self, "execution")
+
+    def _execute(self, context: EngineInvocationContext) -> Any:
+        governance = context.accumulated_context.get("governance")
+        if not isinstance(governance, GovernanceResult):
+            raise RuntimeError("execution requires a GovernanceResult")
+        authorization = governance.authorization_decision
+        if authorization is None:
+            raise RuntimeError("execution requires authorization")
+        if authorization.organization_id != context.session.session.organization_id:
+            raise RuntimeError("authorization organization mismatch")
+        if authorization.session_id != context.session.session.id:
+            raise RuntimeError("authorization session mismatch")
+        if authorization.plan_id != context.plan.plan_id:
+            raise RuntimeError("authorization plan mismatch")
+        now = _now()
+        if authorization.valid_until <= now:
+            raise RuntimeError("authorization is expired")
+        if authorization.decision is not AuthorizationDecisionValue.AUTHORIZED:
+            raise RuntimeError("authorization is not granted")
+        if governance.status is not GovernanceResultStatus.AUTHORIZED:
+            raise RuntimeError("governance is not authorized")
+        if not governance.execution_authorized:
+            raise RuntimeError("execution is not authorized")
+        return {
+            "engine": self.engine_type,
+            "session_id": str(context.session.session.id),
+            "plan_id": str(context.plan.plan_id),
+            "status": "completed",
+            "authorization_id": str(authorization.authorization_id),
+        }
+
+
 class NoopExecutor(RuntimeEngineExecutor):
     """Executor for non-cognitive placeholder stages without external effects."""
 
@@ -296,3 +400,14 @@ def _require(values: dict[str, Any], key: str) -> Any:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _impact_from_decision(decision_package: DecisionPackage) -> ImpactLevel:
+    value = decision_package.recommendation.expected_impact.value.lower()
+    if value == "medium":
+        return ImpactLevel.MODERATE
+    if value == "critical":
+        return ImpactLevel.CRITICAL
+    if value == "high":
+        return ImpactLevel.HIGH
+    return ImpactLevel.LOW

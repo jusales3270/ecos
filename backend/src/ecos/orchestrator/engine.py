@@ -8,6 +8,11 @@ from uuid import UUID
 
 from ecos.domain import SessionStage
 from ecos.events import Event, EventMetadata, EventPriority, EventService, EventType
+from ecos.governance import (
+    AuthorizationDecisionValue,
+    GovernanceResult,
+    GovernanceResultStatus,
+)
 from ecos.orchestrator.exceptions import (
     ApprovalMissingError,
     AuthorizationExpiredError,
@@ -495,6 +500,14 @@ class Orchestrator:
             return
         orchestration_input = state.orchestration_input
         plan = orchestration_input.cognitive_plan
+        governance_result = self._governance_result_from_outputs(state)
+        if governance_result is not None:
+            self._validate_governance_result_for_execution(
+                governance_result,
+                plan,
+                self._now(),
+            )
+            return
         governance_required = plan.governance_requirements.governance_required
         approval_required = (
             plan.approval_requirements.required
@@ -519,6 +532,55 @@ class Orchestrator:
                 plan,
                 self._now(),
             )
+
+    def _governance_result_from_outputs(
+        self,
+        state: "_RuntimeState",
+    ) -> GovernanceResult | None:
+        for result in state.stage_results.values():
+            if result.engine == "governance" and isinstance(
+                result.output,
+                GovernanceResult,
+            ):
+                return result.output
+        initial = state.orchestration_input.initial_inputs.get("governance")
+        if isinstance(initial, GovernanceResult):
+            return initial
+        return None
+
+    def _validate_governance_result_for_execution(
+        self,
+        governance: GovernanceResult,
+        plan: CognitivePlan,
+        now: datetime,
+    ) -> None:
+        authorization = governance.authorization_decision
+        if authorization is None:
+            raise GovernanceMissingError("execution requires authorization")
+        if (
+            governance.organization_id != plan.organization_id
+            or governance.session_id != plan.session_id
+            or governance.plan_id != plan.plan_id
+        ):
+            raise GovernanceMissingError("governance result scope is incompatible")
+        if (
+            authorization.organization_id != plan.organization_id
+            or authorization.session_id != plan.session_id
+            or authorization.plan_id != plan.plan_id
+        ):
+            raise IncompatibleApprovalError("authorization scope is incompatible")
+        if authorization.valid_until <= now:
+            raise AuthorizationExpiredError("authorization is expired")
+        if governance.status is GovernanceResultStatus.AWAITING_APPROVAL:
+            raise ApprovalMissingError("governance is awaiting approval")
+        if governance.status is GovernanceResultStatus.REVIEW_REQUIRED:
+            raise ApprovalMissingError("governance requires human review")
+        if governance.status is GovernanceResultStatus.DENIED:
+            raise GovernanceMissingError("governance denied execution")
+        if authorization.decision is not AuthorizationDecisionValue.AUTHORIZED:
+            raise ApprovalMissingError("authorization is not granted")
+        if not governance.execution_authorized:
+            raise ApprovalMissingError("execution authorization is not granted")
 
     def _validate_approval(
         self,
