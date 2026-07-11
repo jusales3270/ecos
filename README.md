@@ -45,7 +45,7 @@ A arquitetura inicial do Event Bus está em `backend/src/ecos/events/` e define 
 
 ## Cognitive Session Manager
 
-A arquitetura inicial do Cognitive Session Manager está em `backend/src/ecos/session/` e define apenas modelos, interface de repositório e serviço de ciclo de vida por abstração. Esta camada ainda não implementa banco de dados, Redis, persistência em memória concreta, regras automáticas de transição ou IA.
+O Cognitive Session Manager mantém seu contrato de repositório e oferece persistência de sessões, estado atual, snapshots e transições em PostgreSQL via SQLAlchemy 2 e asyncpg. O fake em memória permanece como padrão para testes e para o runtime demo. Defina `ECOS_SESSION_REPOSITORY=postgres` e aplique as migrations Alembic para habilitar PostgreSQL.
 
 ## Orchestrator
 
@@ -110,6 +110,12 @@ A resposta esperada contém `status`, `service` e `version`.
 ```bash
 cd backend
 uv run pytest
+```
+
+Os testes PostgreSQL são condicionais. Para executá-los contra um banco descartável:
+
+```bash
+ECOS_TEST_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos uv run pytest
 ```
 
 ### Executar lint e formatação

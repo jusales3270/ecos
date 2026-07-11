@@ -10,6 +10,8 @@ from ecos.core.logging import (
     set_correlation_id,
 )
 from ecos.runtime import RuntimeEngine
+from ecos.runtime.fakes import FakeSessionRepository
+from ecos.session import PostgresSessionRepository
 
 
 def test_settings_exposes_development_defaults_without_real_secrets() -> None:
@@ -21,7 +23,8 @@ def test_settings_exposes_development_defaults_without_real_secrets() -> None:
     assert settings.version == "0.1.0"
     assert settings.environment == "development"
     assert settings.log_level == "INFO"
-    assert settings.database_url.startswith("postgresql://ecos:ecos@")
+    assert settings.database_url.startswith("postgresql+asyncpg://ecos:ecos@")
+    assert settings.session_repository == "fake"
     assert settings.redis_url.startswith("redis://")
     assert settings.pgadmin_email == "admin@example.local"
     assert settings.pgadmin_password == "change-me-development-only"
@@ -50,6 +53,20 @@ def test_container_registers_services_fake_providers_and_runtime() -> None:
         "providers": {"CUSTOM": True},
         "runtime": True,
     }
+
+
+def test_container_selects_configured_session_repository() -> None:
+    """Container keeps fake by default and supports PostgreSQL explicitly."""
+    fake_container = Container(settings=Settings(session_repository="fake"))
+    postgres_container = Container(
+        settings=Settings(
+            session_repository="postgres",
+            database_url="postgresql://ecos:ecos@localhost/ecos",
+        )
+    )
+
+    assert isinstance(fake_container.session_repository, FakeSessionRepository)
+    assert isinstance(postgres_container.session_repository, PostgresSessionRepository)
 
 
 def test_structured_logging_includes_correlation_id() -> None:
