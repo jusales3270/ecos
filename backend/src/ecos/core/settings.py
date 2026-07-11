@@ -1,6 +1,8 @@
 """Centralized settings for the ECOS backend."""
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +27,19 @@ class Settings(BaseSettings):
         default="postgresql://ecos:ecos@postgres:5432/ecos",
         description="Development PostgreSQL connection URL with placeholder values.",
     )
+    session_repository: Literal["fake", "postgres"] = Field(
+        default="fake",
+        description="Session repository implementation used by the application.",
+    )
+
+    @field_validator("database_url")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        """Use SQLAlchemy's asyncpg driver for PostgreSQL URLs."""
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return value
+
     redis_url: str = Field(
         default="redis://redis:6379/0",
         description="Development Redis connection URL.",
