@@ -80,7 +80,17 @@ O resultado inclui `ComplianceReport`, `ExplainabilityReport`, violações segur
 
 Os níveis oficiais de aprovação são Level 1 a Level 5. Level 1 pode autorizar automaticamente continuidade cognitiva de baixo risco e baixo impacto, mas não autoriza execução externa. Execution sempre exige autorização válida e aprovação humana explícita quando solicitada. Requests de aprovação passam pelos estados `pending`, `partially_approved`, `granted`, `rejected`, `expired`, `revoked` e `cancelled`; uma pessoa não conta duas vezes, papéis e quorum são validados, rejeição bloqueia e revogação invalida autorização dependente. A autenticação real não foi implementada: o `IdentityPort` consome uma identidade previamente validada por uma porta injetada.
 
-O Runtime continua delegando ao Orchestrator. O Orchestrator invoca Governance como estágio do plano, preserva o `GovernanceResult`, entra em `waiting_approval` quando houver aprovação pendente e não transforma pending em granted. A Execution Layer real fica para sprint posterior; o executor atual permanece no-op seguro e rejeita ausência, expiração ou incompatibilidade de autorização. `/runtime/demo` continua retornando `status="completed"`, `recommendation="Proceed using ECOS context, reasoning, debate and governance."` e `confidence=0.91`, sem simular aprovação humana.
+O Runtime continua delegando ao Orchestrator. O Orchestrator invoca Governance como estágio do plano, preserva o `GovernanceResult`, entra em `waiting_approval` quando houver aprovação pendente e não transforma pending em granted. `/runtime/demo` continua retornando `status="completed"`, `recommendation="Proceed using ECOS context, reasoning, debate and governance."` e `confidence=0.91`, sem simular aprovação humana ou executar ação externa.
+
+## Execution Layer
+
+A Execution Layer real está em `backend/src/ecos/execution/` e transforma uma ação aprovada em operação controlada. Ela não decide, não recomenda, não altera `CognitivePlan`, `DecisionPackage` ou `GovernanceResult`, não concede aprovação e não acessa LLM, `AIProvider`, Container, variáveis de ambiente, SQLAlchemy, PostgreSQL ou sistemas externos diretamente.
+
+Toda comunicação operacional passa por `ExecutionConnector` registrado em `ConnectorRegistry` injetado. A seleção é determinística por `connector_id`, fallback explicitamente permitido, capability autorizada, prioridade e `connector_id`; conectores indisponíveis, incompatíveis ou fora da autorização são rejeitados. A configuração padrão registra apenas um connector em memória para dry-run, sem ERP, CRM, APIs reais, navegador, agentes ou MCP reais.
+
+Os contratos tipados cobrem execuções `human`, `system`, `api`, `agent`, `browser` e `mcp`, `ExecutionPlan` com DAG validado, constraints, recursos, janela, timeout, retry, fallback autorizado, artifacts por referência, métricas, logs seguros, timeline append-only, falhas classificadas, idempotência em memória e rollback explícito. `dry_run` é o padrão; `live` exige autorização explícita e connector com suporte a live.
+
+Human execution cria `HumanTask` em memória e retorna `paused` com `ExecutionResumeState`; não finge conclusão. Rollback nunca é inventado: roda em ordem reversa apenas para etapas concluídas com `RollbackAction` explícita e autorização de rollback. Resultados, logs, timeline, artifacts, idempotência e estado de retomada ainda não são persistidos neste sprint.
 
 ## Cognitive Planner
 

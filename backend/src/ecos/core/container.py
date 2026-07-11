@@ -13,6 +13,13 @@ from ecos.debate import AIDebateEngine, DebateService
 from ecos.decision import AIDecisionSupportEngine, DecisionService
 from ecos.domain import Objective, Organization
 from ecos.events import EventService
+from ecos.execution import (
+    ConnectorRegistry,
+    ExecutionEngine,
+    InMemoryHumanTaskProvider,
+    InMemoryIdempotencyProvider,
+    default_in_memory_connector,
+)
 from ecos.governance import (
     DefaultApprovalPolicyProvider,
     GovernanceConfig,
@@ -228,6 +235,21 @@ class Container:
             id_generator=uuid4,
             config=self.governance_config,
         )
+        self.connector_registry = ConnectorRegistry()
+        self.connector_registry.register(default_in_memory_connector())
+        self.idempotency_provider = InMemoryIdempotencyProvider()
+        self.human_task_provider = InMemoryHumanTaskProvider()
+        self.execution_engine = ExecutionEngine(
+            connector_registry=self.connector_registry,
+            idempotency_provider=self.idempotency_provider,
+            human_task_provider=self.human_task_provider,
+            event_service=self.event_service,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            sleeper=asyncio.sleep,
+            concurrency_limit=1,
+            default_timeout_seconds=30.0,
+        )
         self.engine_executors = {
             "context": ContextExecutor(self.context_service),
             "reasoning": ReasoningExecutor(self.reasoning_service),
@@ -245,7 +267,7 @@ class Container:
                 engine_type="learning",
             ),
             "governance": GovernanceExecutor(self.governance_engine),
-            "execution": ExecutionExecutor(),
+            "execution": ExecutionExecutor(self.execution_engine),
             "observation": NoopExecutor("observation"),
         }
         self.orchestrator = Orchestrator(
