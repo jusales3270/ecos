@@ -93,6 +93,22 @@ def test_event_type_values() -> None:
         "LEARNING_STARTED",
         "LEARNING_VALIDATED",
         "LEARNING_COMPLETED",
+        "PIPELINE_VALIDATION_STARTED",
+        "PIPELINE_STARTED",
+        "STAGE_READY",
+        "ENGINE_INVOKED",
+        "ENGINE_RETRYING",
+        "ENGINE_TIMED_OUT",
+        "ENGINE_COMPLETED",
+        "ENGINE_FAILED",
+        "STAGE_SKIPPED",
+        "PIPELINE_WAITING_APPROVAL",
+        "PIPELINE_BLOCKED",
+        "PIPELINE_RESUMED",
+        "PIPELINE_COMPLETED",
+        "PIPELINE_FAILED",
+        "PIPELINE_CANCELLED",
+        "REPLANNING_REQUESTED",
     }
 
 

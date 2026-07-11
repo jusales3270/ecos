@@ -115,28 +115,34 @@ def test_cognitive_pipeline_with_fakes_executes_full_flow() -> None:
     assert event_types == [
         EventType.SESSION_CREATED,
         EventType.SESSION_UPDATED,
-        EventType.EXECUTION_STARTED,
-        EventType.EXECUTION_COMPLETED,
-        EventType.SESSION_UPDATED,
-        EventType.CONTEXT_CREATED,
-        EventType.SESSION_UPDATED,
-        EventType.REASONING_STARTED,
-        EventType.REASONING_COMPLETED,
-        EventType.SPECIALIST_CONTRIBUTED,
-        EventType.SESSION_UPDATED,
-        EventType.DEBATE_STARTED,
-        EventType.DEBATE_COMPLETED,
-        EventType.SESSION_UPDATED,
-        EventType.SIMULATION_STARTED,
-        EventType.SIMULATION_COMPLETED,
-        EventType.SESSION_UPDATED,
-        EventType.RECOMMENDATION_STARTED,
-        EventType.RECOMMENDATION_CREATED,
+        EventType.PIPELINE_VALIDATION_STARTED,
+        EventType.PIPELINE_STARTED,
+        EventType.STAGE_READY,
+        EventType.ENGINE_INVOKED,
+        EventType.ENGINE_COMPLETED,
+        EventType.STAGE_READY,
+        EventType.ENGINE_INVOKED,
+        EventType.ENGINE_COMPLETED,
+        EventType.STAGE_READY,
+        EventType.ENGINE_INVOKED,
+        EventType.ENGINE_COMPLETED,
+        EventType.STAGE_READY,
+        EventType.ENGINE_INVOKED,
+        EventType.ENGINE_COMPLETED,
+        EventType.STAGE_READY,
+        EventType.ENGINE_INVOKED,
+        EventType.ENGINE_COMPLETED,
+        EventType.STAGE_READY,
+        EventType.ENGINE_INVOKED,
+        EventType.ENGINE_COMPLETED,
+        EventType.STAGE_READY,
+        EventType.ENGINE_INVOKED,
         EventType.LEARNING_STARTED,
         EventType.LEARNING_VALIDATED,
         EventType.MEMORY_UPDATED,
         EventType.LEARNING_COMPLETED,
-        EventType.SESSION_UPDATED,
+        EventType.ENGINE_COMPLETED,
+        EventType.PIPELINE_COMPLETED,
         EventType.SESSION_COMPLETED,
     ]
     assert [transition.transition_type for transition in transitions] == [
@@ -222,8 +228,9 @@ def test_runtime_emits_debate_started_but_not_completed_on_failure() -> None:
         pipeline.run("Verify debate failure events")
 
     event_types = [item.event.event_type for item in pipeline.event_bus.envelopes]
-    assert EventType.DEBATE_STARTED in event_types
-    assert EventType.DEBATE_COMPLETED not in event_types
+    assert EventType.ENGINE_FAILED in event_types
+    assert EventType.PIPELINE_FAILED in event_types
+    assert EventType.PIPELINE_COMPLETED not in event_types
 
 
 def test_runtime_delivers_complete_reasoning_and_debate_to_simulation() -> None:
@@ -249,5 +256,6 @@ def test_runtime_emits_simulation_started_but_not_completed_on_failure() -> None
         pipeline.run("Verify simulation failure events")
 
     event_types = [item.event.event_type for item in pipeline.event_bus.envelopes]
-    assert event_types.count(EventType.SIMULATION_STARTED) == 1
-    assert EventType.SIMULATION_COMPLETED not in event_types
+    assert event_types.count(EventType.ENGINE_FAILED) == 1
+    assert EventType.PIPELINE_FAILED in event_types
+    assert EventType.PIPELINE_COMPLETED not in event_types

@@ -33,7 +33,7 @@ O núcleo de domínio inicial está em `backend/src/ecos/domain/` e modela apena
 
 ## Runtime Demo
 
-O primeiro fluxo cognitivo executável está em `backend/src/ecos/runtime/` e conecta os módulos arquitetados usando apenas implementações Fake/InMemory. O endpoint `POST /runtime/demo` executa o fluxo sem IA, banco de dados, embeddings, provedores reais ou chamadas externas.
+O fluxo cognitivo executável está em `backend/src/ecos/runtime/`. O Runtime cria a Session, solicita um `CognitivePlan` ao Planner e delega a execução coordenada ao Orchestrator real. O endpoint `POST /runtime/demo` preserva o mesmo contrato público e executa por padrão sem IA, banco de dados, embeddings, provedores reais ou chamadas externas.
 
 ## AI Provider Abstraction
 
@@ -62,7 +62,13 @@ O Cognitive Session Manager mantém seu contrato de repositório e oferece persi
 
 ## Orchestrator
 
-A arquitetura inicial do Orchestrator está em `backend/src/ecos/orchestrator/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa execução real, filas, Temporal, Celery ou asyncio.
+O Orchestrator real está em `backend/src/ecos/orchestrator/` e consome um `CognitivePlan` imutável para coordenar Engines injetados por contrato genérico. Ele valida identidade de Plan/Session/Organization, dependências do DAG, engines registrados, timeouts, retries, condições estruturadas, governança e aprovação humana antes de invocar qualquer executor.
+
+O Planner define como pensar; o Orchestrator apenas coordena o plano; os Engines realizam cognição. O Orchestrator não cria hipóteses, não recomenda, não decide, não aprova, não chama LLM, não importa OpenAI, não depende de `AIProvider`, não acessa Container, ambiente, PostgreSQL ou SQLAlchemy, e não persiste estado próprio.
+
+São suportados modos sequencial, paralelo e condicional. A execução paralela usa limite de concorrência injetado e consolida resultados pela ordem do plano. Condições aceitam somente operadores allowlisted e fontes seguras, sem linguagem livre ou `eval`. Timeouts usam política injetada; retries só ocorrem quando o estágio permite, a falha é recuperável e o limite de tentativas não foi atingido, com backoff injetado.
+
+Falhas de estágios obrigatórios interrompem dependentes e produzem `FailureReport` seguro. Estágios opcionais só viram `skipped` quando a política permite. Execution permanece bloqueado sem Governance satisfeita e aprovação humana explícita compatível com `organization_id`, `session_id` e `plan_id`; ausência de aprovação retorna estado `waiting_approval` retomável, preservando outputs já concluídos e timeline append-only.
 
 ## Cognitive Planner
 
@@ -70,7 +76,7 @@ O Cognitive Planner real está em `backend/src/ecos/planner/` e planeja como o E
 
 O Planner usa somente regras determinísticas e dependências internas injetadas pelo Container: `SpecialistRegistry`, `EventService`, relógio e gerador de IDs. Ele não usa LLM, não importa OpenAI, não depende de `AIProvider`, não raciocina sobre o problema, não recomenda, não decide, não executa Engines e não altera memória ou políticas. Execução, quando solicitada, aparece apenas como estágio condicional bloqueado até governança e aprovação humana.
 
-As estimativas são provider-agnostic; `estimated_cost_units` é custo relativo, não preço monetário. O Orchestrator definitivo consumirá integralmente o plano em sprint futura. Nunca versione segredos.
+As estimativas são provider-agnostic; `estimated_cost_units` é custo relativo, não preço monetário. O Orchestrator consome o plano validado sem mutá-lo, sem reconstruir regras do Planner e sem recalcular complexidade, risco ou especialistas. Nunca versione segredos.
 
 ## Decision Support Engine
 

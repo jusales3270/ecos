@@ -41,7 +41,7 @@ curl -X POST http://127.0.0.1:8000/runtime/demo \
   -d '{"objective":"Improve organizational decision quality"}'
 ```
 
-O fluxo demo preserva o mesmo resultado público e usa providers cognitivos Fake e, por padrão, repositórios em memória. O resultado cognitivo passa pelo Learning Engine antes de virar memória.
+O fluxo demo preserva o mesmo resultado público e usa providers cognitivos Fake e, por padrão, repositórios em memória. O Runtime cria a Session, solicita o `CognitivePlan` e entrega Plan + Session ao Orchestrator real. O Orchestrator coordena Context, Reasoning, Specialists, Debate, Simulation, Decision Support e Learning por executors injetados; o resultado cognitivo passa pelo Learning Engine antes de virar memória.
 
 Com `ECOS_MEMORY_REPOSITORY=fake`, o Container mantém `FakeContextProvider` para o runtime demo. Com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta o Context Engine real, que constrói contexto somente a partir da requisição da sessão e da memória organizacional escopada por `organization_id`. O Context Engine não usa LLM, OpenAI, embeddings, pgvector, busca web ou Knowledge Graph; ele calcula relevância, confiança e completude de forma determinística e mantém lacunas explícitas em `missing_context`.
 
@@ -49,7 +49,17 @@ Com `ECOS_MEMORY_REPOSITORY=fake`, o Container mantém `FakeContextProvider` par
 
 O Container registra o `CognitivePlanner` real por padrão e injeta `SpecialistRegistry`, `EventService`, relógio UTC e gerador de identificadores. O Planner roda antes do Context Engine, emite eventos seguros de planejamento e gera um `CognitivePlan` determinístico com Engines, especialistas, dependências acíclicas, governança, aprovação humana requerida quando necessário, estimativas relativas e `confidence_target`.
 
-O Planner não usa OpenAI, `AIProvider`, variáveis de ambiente, PostgreSQL ou Container internamente. Ele não raciocina, não recomenda, não decide e não executa ações. O runtime demo preserva o mesmo resultado público; o Orchestrator definitivo consumirá o plano completo em sprint futura.
+O Planner não usa OpenAI, `AIProvider`, variáveis de ambiente, PostgreSQL ou Container internamente. Ele não raciocina, não recomenda, não decide e não executa ações. O runtime demo preserva o mesmo resultado público; o Orchestrator real consome o plano completo sem mutá-lo.
+
+## Orchestrator local
+
+O Container registra o Orchestrator real por padrão e injeta registry de executors, `EventService`, `SessionService`, relógio UTC, gerador de IDs, sleeper/backoff e configuração imutável de concorrência. O Runtime não chama Engines cognitivos diretamente; ele delega a execução ao Orchestrator e retorna o resultado público de `/runtime/demo`.
+
+O Orchestrator valida o DAG do `CognitivePlan`, resolve dependências, executa estágios prontos em modo sequencial, paralelo ou condicional, preserva outputs intermediários, sincroniza Session e registra timeline append-only. Condições usam somente operadores estruturados allowlisted; não há `eval`, expressão Python ou código recebido. Timeouts e retries são controlados por política injetada, com backoff testável sem espera real.
+
+Falhas obrigatórias interrompem dependentes e produzem relatório seguro; falhas opcionais podem virar `skipped` somente quando o plano permite. Execution permanece subordinado à governança humana: sem Governance satisfeita e aprovação explícita compatível, o pipeline fica em `waiting_approval` com estado retomável e sem marcar falha apenas por aguardar decisão humana.
+
+O Orchestrator não realiza cognição, não chama LLM, não importa OpenAI, não depende de `AIProvider`, não acessa Container, variáveis de ambiente, PostgreSQL ou SQLAlchemy, não persiste estado próprio e não modifica o `CognitivePlan`.
 
 ## Provider OpenAI opcional
 

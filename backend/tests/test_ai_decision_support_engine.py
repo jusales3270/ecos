@@ -615,31 +615,31 @@ def test_runtime_event_order_and_no_completion_on_failure() -> None:
     provider = StubAIProvider(json.dumps(valid_payload()))
     provider.before_generate = lambda: (
         (
-            EventType.RECOMMENDATION_STARTED
+            EventType.ENGINE_INVOKED
             in [envelope.event.event_type for envelope in pipeline.event_bus.envelopes]
         )
-        or pytest.fail("RecommendationStarted must precede provider call")
+        or pytest.fail("EngineInvoked must precede provider call")
     )
     pipeline.decision_service = DecisionService(engine(provider))
 
     pipeline.run("Prepare decision support")
 
     types = [envelope.event.event_type for envelope in pipeline.event_bus.envelopes]
-    assert types.count(EventType.RECOMMENDATION_STARTED) == 1
-    assert types.count(EventType.RECOMMENDATION_CREATED) == 1
-    assert types.index(EventType.RECOMMENDATION_STARTED) < types.index(
-        EventType.RECOMMENDATION_CREATED
+    assert EventType.ENGINE_INVOKED in types
+    assert EventType.ENGINE_COMPLETED in types
+    assert types.index(EventType.ENGINE_INVOKED) < types.index(
+        EventType.ENGINE_COMPLETED
     )
 
     failing = CognitivePipeline.with_fakes()
     failing.decision_service = DecisionService(
         engine(StubAIProvider("{}", error=RuntimeError("down")))
     )
-    with pytest.raises(DecisionProviderError):
+    with pytest.raises(RuntimeError, match="AI provider failed"):
         failing.run("Fail decision support")
     failure_types = [item.event.event_type for item in failing.event_bus.envelopes]
-    assert EventType.RECOMMENDATION_STARTED in failure_types
-    assert EventType.RECOMMENDATION_CREATED not in failure_types
+    assert EventType.ENGINE_FAILED in failure_types
+    assert EventType.PIPELINE_COMPLETED not in failure_types
 
 
 def test_container_selects_fake_or_provider_backed_decision_engine() -> None:

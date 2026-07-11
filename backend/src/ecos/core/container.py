@@ -1,8 +1,10 @@
 """Dependency injection container for ECOS services and fake providers."""
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from ecos.context import ContextEngine, ContextService
 from ecos.core.exceptions import ConfigurationError
@@ -13,7 +15,12 @@ from ecos.domain import Objective, Organization
 from ecos.events import EventService
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
-from ecos.orchestrator import OrchestratorService
+from ecos.orchestrator import (
+    OrchestrationConfig,
+    OrchestrationMode,
+    Orchestrator,
+    OrchestratorService,
+)
 from ecos.planner import CognitivePlanner, PlannerService
 from ecos.providers import (
     AIProvider,
@@ -39,6 +46,16 @@ from ecos.runtime import (
     FakeSpecialistProvider,
     FakeWarEngine,
     RuntimeEngine,
+)
+from ecos.runtime.adapters import (
+    ContextExecutor,
+    DebateExecutor,
+    DecisionExecutor,
+    LearningExecutor,
+    NoopExecutor,
+    ReasoningExecutor,
+    SimulationExecutor,
+    SpecialistsExecutor,
 )
 from ecos.session import PostgresSessionRepository, SessionRepository, SessionService
 from ecos.simulation import AIWarEngine, SimulationService
@@ -151,7 +168,6 @@ class Container:
             self.specialist_registry,
         )
         self.decision_service = DecisionService(self.decision_provider)
-        self.orchestrator_service = OrchestratorService(self.orchestrator_provider)
         self.provider_registry = ProviderRegistry()
         self.ai_service = AIService(self.provider_registry)
         self.ai_service.register(ai_provider_type, self.ai_provider, default=True)
@@ -187,6 +203,39 @@ class Container:
         self.reasoning_service = ReasoningService(self.reasoning_provider)
         self.debate_service = DebateService(self.debate_provider)
         self.simulation_service = SimulationService(self.simulation_provider)
+        self.engine_executors = {
+            "context": ContextExecutor(self.context_service),
+            "reasoning": ReasoningExecutor(self.reasoning_service),
+            "specialists": SpecialistsExecutor(self.specialist_service),
+            "debate": DebateExecutor(self.debate_service),
+            "simulation": SimulationExecutor(self.simulation_service),
+            "decision": DecisionExecutor(self.decision_service),
+            "decision_support": DecisionExecutor(
+                self.decision_service,
+                engine_type="decision_support",
+            ),
+            "memory": LearningExecutor(self.learning_service),
+            "learning": LearningExecutor(
+                self.learning_service,
+                engine_type="learning",
+            ),
+            "governance": NoopExecutor("governance"),
+            "execution": NoopExecutor("execution"),
+            "observation": NoopExecutor("observation"),
+        }
+        self.orchestrator = Orchestrator(
+            executors=self.engine_executors,
+            event_service=self.event_service,
+            session_service=self.session_service,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+            sleeper=asyncio.sleep,
+            config=OrchestrationConfig(mode=OrchestrationMode.SEQUENTIAL),
+        )
+        self.orchestrator_service = OrchestratorService(
+            self.orchestrator_provider,
+            self.orchestrator,
+        )
         self.runtime_pipeline = CognitivePipeline(
             memory_repository=self.memory_repository,
             session_repository=self.session_repository,
