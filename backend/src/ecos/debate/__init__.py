@@ -1,5 +1,6 @@
 """Debate Engine architecture primitives for ECOS."""
 
+from ecos.debate.ai_engine import AIDebateEngine
 from ecos.debate.models import (
     Argument,
     Consensus,
@@ -14,6 +15,7 @@ from ecos.debate.service import DebateService
 
 __all__ = [
     "Argument",
+    "AIDebateEngine",
     "Consensus",
     "ConsensusLevel",
     "CounterArgument",

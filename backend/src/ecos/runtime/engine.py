@@ -232,15 +232,30 @@ class CognitivePipeline:
             active_engine="debate",
             progress=0.6,
         )
-        debate = Debate(session_id=session_id, specialists=specialists)
+        debate = Debate(
+            session_id=session_id,
+            specialists=specialists,
+            objective=objective,
+            unified_context=context.model_dump(mode="json"),
+            organizational_constraints=reasoning_context.constraints,
+            reasoning_result=reasoning,
+            contributions=contributions,
+        )
+        self._publish(
+            EventType.DEBATE_STARTED,
+            session_id,
+            {"status": "started", "participants": len(specialists)},
+        )
         debate = self.debate_service.start(debate)
         arguments = self.debate_service.collect_arguments(debate)
         debate = debate.model_copy(update={"arguments": arguments})
         debate_result = self.debate_service.finalize(debate)
+        debate_payload = {"confidence": debate_result.confidence}
+        debate_payload.update(debate_result.metadata)
         self._publish(
             EventType.DEBATE_COMPLETED,
             session_id,
-            {"confidence": debate_result.confidence},
+            debate_payload,
         )
 
         self._update_session_state(

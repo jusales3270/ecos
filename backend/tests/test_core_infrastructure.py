@@ -9,10 +9,12 @@ from ecos.core.logging import (
     get_correlation_id,
     set_correlation_id,
 )
+from ecos.debate import AIDebateEngine
 from ecos.memory import PostgresMemoryRepository
 from ecos.reasoning import AIReasoningEngine
 from ecos.runtime import RuntimeEngine
 from ecos.runtime.fakes import (
+    FakeDebateProvider,
     FakeMemoryRepository,
     FakeReasoningProvider,
     FakeSessionRepository,
@@ -62,6 +64,7 @@ def test_container_registers_services_fake_providers_and_runtime() -> None:
         "runtime": True,
     }
     assert isinstance(container.reasoning_provider, FakeReasoningProvider)
+    assert isinstance(container.debate_provider, FakeDebateProvider)
 
 
 def test_container_selects_ai_reasoning_engine_for_openai() -> None:
@@ -72,6 +75,10 @@ def test_container_selects_ai_reasoning_engine_for_openai() -> None:
 
     assert isinstance(container.reasoning_provider, AIReasoningEngine)
     assert container.reasoning_provider._provider is container.provider_registry.get(
+        container.ai_provider_type
+    )
+    assert isinstance(container.debate_provider, AIDebateEngine)
+    assert container.debate_provider._provider is container.provider_registry.get(
         container.ai_provider_type
     )
 
