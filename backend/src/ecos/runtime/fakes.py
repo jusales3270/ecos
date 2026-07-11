@@ -255,6 +255,7 @@ class FakePlannerProvider(PlannerProvider):
             EngineSelection(engine="reasoning", reason="Analyze objective."),
             EngineSelection(engine="specialists", reason="Collect specialist input."),
             EngineSelection(engine="debate", reason="Compare specialist arguments."),
+            EngineSelection(engine="simulation", reason="Explore possible scenarios."),
             EngineSelection(engine="decision", reason="Prepare recommendation."),
             EngineSelection(engine="memory", reason="Record execution memory."),
         ]

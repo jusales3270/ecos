@@ -66,6 +66,12 @@ def make_envelope() -> EventEnvelope:
 def test_event_type_values() -> None:
     """EventType exposes all supported event categories."""
     assert {event_type.value for event_type in EventType} == {
+        "PLANNING_STARTED",
+        "OBJECTIVE_CLASSIFIED",
+        "COMPLEXITY_CALCULATED",
+        "PIPELINE_GENERATED",
+        "SPECIALISTS_SELECTED",
+        "PLANNING_COMPLETED",
         "SESSION_CREATED",
         "SESSION_UPDATED",
         "SESSION_COMPLETED",

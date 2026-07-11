@@ -1,6 +1,7 @@
 """Dependency injection container for ECOS services and fake providers."""
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from ecos.context import ContextEngine, ContextService
@@ -13,7 +14,7 @@ from ecos.events import EventService
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
 from ecos.orchestrator import OrchestratorService
-from ecos.planner import PlannerService
+from ecos.planner import CognitivePlanner, PlannerService
 from ecos.providers import (
     AIProvider,
     AIService,
@@ -41,7 +42,13 @@ from ecos.runtime import (
 )
 from ecos.session import PostgresSessionRepository, SessionRepository, SessionService
 from ecos.simulation import AIWarEngine, SimulationService
-from ecos.specialists import SpecialistRegistry, SpecialistService
+from ecos.specialists import (
+    Capability,
+    Specialist,
+    SpecialistRegistry,
+    SpecialistService,
+    SpecialistType,
+)
 
 
 @dataclass
@@ -108,10 +115,40 @@ class Container:
         self.learning_service = LearningService(self.memory_service, self.event_service)
         self.session_service = SessionService(self.session_repository)
         self.context_service = ContextService(self.context_provider)
-        self.planner_service = PlannerService(self.planner_provider)
+        self.specialist_registry = SpecialistRegistry()
+        for specialist in self.specialist_provider.load():
+            self.specialist_registry.register(specialist)
+        registered_types = {
+            specialist.type for specialist in self.specialist_registry.list()
+        }
+        for specialist_type in SpecialistType:
+            if specialist_type in registered_types:
+                continue
+            self.specialist_registry.register(
+                Specialist(
+                    name=f"{specialist_type.value.title()} Specialist",
+                    type=specialist_type,
+                    description=f"{specialist_type.value} specialist.",
+                    capabilities=[
+                        Capability(
+                            name=f"{specialist_type.value} analysis",
+                            description="Deterministic specialist capability.",
+                        )
+                    ],
+                )
+            )
+        self.cognitive_planner = CognitivePlanner(
+            specialist_registry=self.specialist_registry,
+            event_service=self.event_service,
+            clock=lambda: datetime.now(UTC),
+        )
+        self.planner_service = PlannerService(
+            self.planner_provider,
+            self.cognitive_planner,
+        )
         self.specialist_service = SpecialistService(
             self.specialist_provider,
-            SpecialistRegistry(),
+            self.specialist_registry,
         )
         self.decision_service = DecisionService(self.decision_provider)
         self.orchestrator_service = OrchestratorService(self.orchestrator_provider)

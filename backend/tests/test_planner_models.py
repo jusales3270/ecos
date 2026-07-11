@@ -94,6 +94,11 @@ def test_planning_strategy_values() -> None:
         "DEEP_ANALYSIS",
         "EXECUTIVE",
         "CRISIS",
+        "fast_response",
+        "deep_analysis",
+        "executive_advisory",
+        "crisis_mode",
+        "continuous_monitoring",
     }
 
 
@@ -114,7 +119,7 @@ def test_execution_strategy_validates_rationale_and_constraints() -> None:
 
     assert isinstance(strategy.id, UUID)
     assert strategy.strategy == PlanningStrategy.BALANCED
-    assert strategy.constraints == ["Use only architecture-level components"]
+    assert strategy.constraints == ("Use only architecture-level components",)
     assert strategy.created_at.tzinfo is not None
     assert strategy.created_at.utcoffset() == UTC.utcoffset(strategy.created_at)
 
@@ -170,11 +175,11 @@ def test_pipeline_step_contains_required_architecture_fields() -> None:
     assert isinstance(step.id, UUID)
     assert step.order == 1
     assert step.engine == "context"
-    assert step.depends_on == []
+    assert step.depends_on == ()
     assert step.optional is False
     assert step.created_at.tzinfo is not None
     assert step.created_at.utcoffset() == UTC.utcoffset(step.created_at)
-    assert dependent_step.depends_on == [dependency_id]
+    assert dependent_step.depends_on == (dependency_id,)
     assert dependent_step.optional is True
 
     with pytest.raises(ValidationError):
