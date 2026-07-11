@@ -76,6 +76,10 @@ A arquitetura inicial do Decision Support Engine está em `backend/src/ecos/deci
 
 O Debate Engine preserva a implementação determinística quando `ECOS_AI_PROVIDER=fake`. Com `openai`, o Container resolve o provider pelo `ProviderRegistry` e o injeta no `AIDebateEngine`. Tanto Reasoning quanto Debate dependem somente do contrato genérico `AIProvider`; somente a camada de providers conhece o SDK. O Debate avalia o relatório de raciocínio e todas as contribuições independentes dos especialistas, preserva divergências, conflitos e perguntas abertas e não toma decisões nem autoriza execução. Chamadas externas só ocorrem quando OpenAI é configurada explicitamente, e nenhum segredo deve ser versionado.
 
+## War / Simulation Engine
+
+O modo `fake`, que continua sendo o padrão, usa a simulação determinística e preserva o resultado público de `/runtime/demo`. Com `ECOS_AI_PROVIDER=openai`, o Container recupera o provider exclusivamente pelo `ProviderRegistry` e o injeta no `AIWarEngine`, assim como faz com Reasoning e Debate. Esses Engines dependem somente de `AIProvider`; apenas a camada de providers conhece o SDK OpenAI. O War Engine explora futuros possíveis, inclusive cenários desfavoráveis, riscos, oportunidades, efeitos e contingências: ele não prevê o futuro, não decide, não aprova e não autoriza execução. A decisão permanece humana. Chamadas externas só ocorrem quando OpenAI e a credencial local são configuradas explicitamente. Nunca versione segredos.
+
 ## Specialist Framework
 
 A arquitetura inicial do Specialist Framework está em `backend/src/ecos/specialists/` e define modelos, interface de provider, registry e serviço de orquestração por abstração. Os especialistas continuam papéis cognitivos independentes: não recebem `AIProvider` e não se comunicam diretamente entre si.

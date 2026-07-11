@@ -226,3 +226,5 @@ class ReasoningResult(ReasoningModel):
         default_factory=dict,
         description="Safe internal observability metadata.",
     )
+    report: dict[str, object] = Field(default_factory=dict)
+    correlation_id: UUID | None = None

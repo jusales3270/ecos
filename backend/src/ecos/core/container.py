@@ -36,9 +36,11 @@ from ecos.runtime import (
     FakeReasoningProvider,
     FakeSessionRepository,
     FakeSpecialistProvider,
+    FakeWarEngine,
     RuntimeEngine,
 )
 from ecos.session import PostgresSessionRepository, SessionRepository, SessionService
+from ecos.simulation import AIWarEngine, SimulationService
 from ecos.specialists import SpecialistRegistry, SpecialistService
 
 
@@ -124,11 +126,18 @@ class Container:
                 ai_provider_type,
                 self.settings.openai_model,
             )
+            self.simulation_provider = AIWarEngine(
+                registered_provider,
+                ai_provider_type,
+                self.settings.openai_model,
+            )
         else:
             self.reasoning_provider = FakeReasoningProvider()
             self.debate_provider = FakeDebateProvider()
+            self.simulation_provider = FakeWarEngine()
         self.reasoning_service = ReasoningService(self.reasoning_provider)
         self.debate_service = DebateService(self.debate_provider)
+        self.simulation_service = SimulationService(self.simulation_provider)
         self.runtime_pipeline = CognitivePipeline(
             memory_repository=self.memory_repository,
             session_repository=self.session_repository,
@@ -144,6 +153,7 @@ class Container:
             reasoning_service=self.reasoning_service,
             specialist_service=self.specialist_service,
             debate_service=self.debate_service,
+            simulation_service=self.simulation_service,
             decision_service=self.decision_service,
             orchestrator_service=self.orchestrator_service,
             ai_service=self.ai_service,

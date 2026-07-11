@@ -76,6 +76,8 @@ def test_event_type_values() -> None:
         "SPECIALIST_CONTRIBUTED",
         "DEBATE_STARTED",
         "DEBATE_COMPLETED",
+        "SIMULATION_STARTED",
+        "SIMULATION_COMPLETED",
         "RECOMMENDATION_CREATED",
         "EXECUTION_STARTED",
         "EXECUTION_COMPLETED",

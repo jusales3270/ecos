@@ -13,6 +13,7 @@ from ecos.runtime.fakes import (
     FakeReasoningProvider,
     FakeSessionRepository,
     FakeSpecialistProvider,
+    FakeWarEngine,
 )
 from ecos.runtime.models import ExecutionContext, RuntimeResult
 
@@ -30,6 +31,7 @@ __all__ = [
     "FakeReasoningProvider",
     "FakeSessionRepository",
     "FakeSpecialistProvider",
+    "FakeWarEngine",
     "RuntimeEngine",
     "RuntimeResult",
 ]

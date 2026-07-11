@@ -9,6 +9,7 @@ from ecos.memory import MemoryObject
 from ecos.planner import CognitivePlan
 from ecos.reasoning import ReasoningResult
 from ecos.session import ManagedSession
+from ecos.simulation import SimulationReport
 
 
 class ExecutionContext(BaseModel):
@@ -24,6 +25,7 @@ class ExecutionContext(BaseModel):
         default=None,
         description="Reasoning output.",
     )
+    simulation: SimulationReport | None = None
     recommendation: Recommendation | None = Field(
         default=None,
         description="Final recommendation.",

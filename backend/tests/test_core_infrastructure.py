@@ -18,8 +18,10 @@ from ecos.runtime.fakes import (
     FakeMemoryRepository,
     FakeReasoningProvider,
     FakeSessionRepository,
+    FakeWarEngine,
 )
 from ecos.session import PostgresSessionRepository
+from ecos.simulation import AIWarEngine
 
 
 def test_settings_exposes_development_defaults_without_real_secrets() -> None:
@@ -65,6 +67,7 @@ def test_container_registers_services_fake_providers_and_runtime() -> None:
     }
     assert isinstance(container.reasoning_provider, FakeReasoningProvider)
     assert isinstance(container.debate_provider, FakeDebateProvider)
+    assert isinstance(container.simulation_provider, FakeWarEngine)
 
 
 def test_container_selects_ai_reasoning_engine_for_openai() -> None:
@@ -79,6 +82,10 @@ def test_container_selects_ai_reasoning_engine_for_openai() -> None:
     )
     assert isinstance(container.debate_provider, AIDebateEngine)
     assert container.debate_provider._provider is container.provider_registry.get(
+        container.ai_provider_type
+    )
+    assert isinstance(container.simulation_provider, AIWarEngine)
+    assert container.simulation_provider._provider is container.provider_registry.get(
         container.ai_provider_type
     )
 

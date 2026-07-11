@@ -200,3 +200,84 @@ class InvalidDebateSpecialistReferenceError(DebateResponseError):
 class DebateProviderError(DebateResponseError):
     def __init__(self) -> None:
         super().__init__("AI provider failed during debate.", "DEBATE_PROVIDER_ERROR")
+
+
+class WarResponseError(EcosError):
+    """Base error for provider-backed simulation response failures."""
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message=message, code=code)
+
+
+class EmptyWarResponseError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an empty simulation response.", "EMPTY_WAR_RESPONSE"
+        )
+
+
+class InvalidWarResponseError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned invalid simulation JSON.", "INVALID_WAR_RESPONSE"
+        )
+
+
+class IncompatibleWarSchemaError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an incompatible simulation schema.",
+            "INCOMPATIBLE_WAR_SCHEMA",
+        )
+
+
+class MissingWarScenarioError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider omitted a required simulation scenario.",
+            "MISSING_WAR_SCENARIO",
+        )
+
+
+class InvalidWarScenarioTypeError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid simulation scenario type.",
+            "INVALID_WAR_SCENARIO_TYPE",
+        )
+
+
+class InvalidWarProbabilityError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid scenario probability.",
+            "INVALID_WAR_PROBABILITY",
+        )
+
+
+class InvalidWarConfidenceError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned invalid simulation confidence.",
+            "INVALID_WAR_CONFIDENCE",
+        )
+
+
+class InvalidResilienceScoreError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid resilience score.",
+            "INVALID_RESILIENCE_SCORE",
+        )
+
+
+class InvalidWarRiskError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__(
+            "AI provider returned an invalid simulation risk.", "INVALID_WAR_RISK"
+        )
+
+
+class WarProviderError(WarResponseError):
+    def __init__(self) -> None:
+        super().__init__("AI provider failed during simulation.", "WAR_PROVIDER_ERROR")

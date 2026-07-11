@@ -121,6 +121,7 @@ class AIDebateEngine(DebateProvider):
             unresolved_questions=report.outstanding_questions,
             confidence=report.confidence,
             metadata=metadata,
+            report=report.model_dump(mode="json"),
         )
 
     def build_request(self, debate: Debate) -> AIRequest:

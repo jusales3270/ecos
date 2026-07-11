@@ -33,6 +33,7 @@ from ecos.runtime.fakes import (
     FakeReasoningProvider,
     FakeSessionRepository,
     FakeSpecialistProvider,
+    FakeWarEngine,
 )
 from ecos.runtime.models import ExecutionContext, RuntimeResult
 from ecos.session import (
@@ -46,6 +47,7 @@ from ecos.session import (
     SessionTransition,
     TransitionType,
 )
+from ecos.simulation import SimulationContext, SimulationService
 from ecos.specialists import SpecialistRegistry, SpecialistService
 
 
@@ -69,6 +71,7 @@ class CognitivePipeline:
         reasoning_service: ReasoningService,
         specialist_service: SpecialistService,
         debate_service: DebateService,
+        simulation_service: SimulationService,
         decision_service: DecisionService,
         orchestrator_service: OrchestratorService,
         ai_service: AIService,
@@ -88,6 +91,7 @@ class CognitivePipeline:
         self.reasoning_service = reasoning_service
         self.specialist_service = specialist_service
         self.debate_service = debate_service
+        self.simulation_service = simulation_service
         self.decision_service = decision_service
         self.orchestrator_service = orchestrator_service
         self.ai_service = ai_service
@@ -103,6 +107,7 @@ class CognitivePipeline:
         reasoning_provider = FakeReasoningProvider()
         specialist_provider = FakeSpecialistProvider()
         debate_provider = FakeDebateProvider()
+        simulation_provider = FakeWarEngine()
         decision_provider = FakeDecisionProvider()
         orchestrator_provider = FakeOrchestratorProvider()
         ai_provider = FakeAIProvider()
@@ -130,6 +135,7 @@ class CognitivePipeline:
                 SpecialistRegistry(),
             ),
             debate_service=DebateService(debate_provider),
+            simulation_service=SimulationService(simulation_provider),
             decision_service=DecisionService(decision_provider),
             orchestrator_service=OrchestratorService(orchestrator_provider),
             ai_service=ai_service,
@@ -256,6 +262,53 @@ class CognitivePipeline:
             EventType.DEBATE_COMPLETED,
             session_id,
             debate_payload,
+        )
+
+        self._update_session_state(
+            execution,
+            lifecycle_status=SessionLifecycleStatus.EXECUTING,
+            current_stage=SessionStage.SIMULATION,
+            active_engine="simulation",
+            progress=0.7,
+        )
+        simulation_context = SimulationContext(
+            session_id=session_id,
+            objective=execution.cognitive_session.objective.model_dump(mode="json"),
+            unified_context=context.model_dump(mode="json"),
+            organizational_constraints=reasoning_context.constraints,
+            relevant_policies=[
+                element.content
+                for element in context.elements
+                if element.source_type.value == "POLICY"
+            ],
+            memory=[
+                item.model_dump(mode="json") for item in self.memory_service.list()
+            ],
+            reasoning_report=reasoning,
+            debate_report=debate_result,
+            external_signals=[
+                element.model_dump(mode="json")
+                for element in context.elements
+                if element.source_type.value == "EXTERNAL"
+            ],
+            correlation_id=reasoning.correlation_id,
+        )
+        self._publish(EventType.SIMULATION_STARTED, session_id, {"status": "started"})
+        simulation = self.simulation_service.simulate(simulation_context)
+        execution.simulation = simulation
+        self._publish(
+            EventType.SIMULATION_COMPLETED,
+            session_id,
+            {
+                "status": "completed",
+                "scenario_count": len(simulation.scenarios),
+                "risk_count": len(simulation.cross_scenario_risks)
+                + sum(len(item.risks) for item in simulation.scenarios),
+                "contingency_count": len(simulation.contingencies),
+                "resilience_score": simulation.resilience_score,
+                "confidence": simulation.confidence,
+                **simulation.metadata,
+            },
         )
 
         self._update_session_state(
