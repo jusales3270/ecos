@@ -25,11 +25,19 @@ class MemoryService:
         self,
         query: str,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """Search memory objects through the repository abstraction."""
-        return self._repository.search(query, memory_type=memory_type, tags=tags)
+        return self._repository.search(
+            query,
+            organization_id=organization_id,
+            memory_type=memory_type,
+            tags=tags,
+            limit=limit,
+        )
 
     def update(self, memory: MemoryObject) -> MemoryObject:
         """Update a memory object through the repository abstraction."""
@@ -42,8 +50,15 @@ class MemoryService:
     def list(
         self,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """List memory objects through the repository abstraction."""
-        return self._repository.list(memory_type=memory_type, tags=tags)
+        return self._repository.list(
+            organization_id=organization_id,
+            memory_type=memory_type,
+            tags=tags,
+            limit=limit,
+        )

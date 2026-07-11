@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from ecos.context import (
+    ContextBuildRequest,
     ContextElement,
     ContextObject,
     ContextPriority,
@@ -202,8 +203,9 @@ def test_context_models_reject_invalid_created_at() -> None:
 class NotImplementedContextProvider(ContextProvider):
     """Concrete test adapter that delegates to interface methods."""
 
-    def build(self) -> ContextObject:
+    def build(self, request: ContextBuildRequest | None = None) -> ContextObject:
         """Delegate to the interface method."""
+        del request
         return super().build()
 
     def expand(self, context: ContextObject) -> ContextObject:
@@ -241,8 +243,9 @@ class TestContextProvider(ContextProvider):
         """Initialize the provider with a reusable context object."""
         self.context = context
 
-    def build(self) -> ContextObject:
+    def build(self, request: ContextBuildRequest | None = None) -> ContextObject:
         """Return the configured context object."""
+        del request
         return self.context
 
     def expand(self, context: ContextObject) -> ContextObject:

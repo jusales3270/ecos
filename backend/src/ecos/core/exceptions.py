@@ -53,6 +53,97 @@ class RuntimeExecutionError(EcosError):
         )
 
 
+class ContextEngineError(EcosError):
+    """Base error raised by the deterministic Context Engine."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "CONTEXT_ENGINE_ERROR",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message=message, code=code, details=details or {})
+
+
+class MissingOrganizationError(ContextEngineError):
+    """Raised when a context request has no usable organization scope."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "organization_id is required to build context.",
+            "CONTEXT_MISSING_ORGANIZATION",
+        )
+
+
+class InvalidObjectiveError(ContextEngineError):
+    """Raised when a context request objective is unusable."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "objective is required to build context.",
+            "CONTEXT_INVALID_OBJECTIVE",
+        )
+
+
+class MemoryRetrievalError(ContextEngineError):
+    """Raised when memory retrieval fails."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "context memory retrieval failed.",
+            "CONTEXT_MEMORY_RETRIEVAL_FAILED",
+        )
+
+
+class CrossOrganizationMemoryError(ContextEngineError):
+    """Raised when a repository returns memory from another organization."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "repository returned memory outside the requested organization.",
+            "CONTEXT_CROSS_ORGANIZATION_MEMORY",
+        )
+
+
+class ImpossibleContextError(ContextEngineError):
+    """Raised when context cannot be constructed at all."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(
+            "context cannot be constructed.",
+            "CONTEXT_IMPOSSIBLE",
+            {"reason": reason},
+        )
+
+
+class InvalidContextVersionError(ContextEngineError):
+    """Raised when context versioning input is invalid."""
+
+    def __init__(self) -> None:
+        super().__init__("context version is invalid.", "CONTEXT_INVALID_VERSION")
+
+
+class IncompatibleContextResultError(ContextEngineError):
+    """Raised when a provider returns an incompatible context object."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "context provider returned an incompatible result.",
+            "CONTEXT_INCOMPATIBLE_RESULT",
+        )
+
+
+class ContextDependencyUnavailableError(ContextEngineError):
+    """Raised when an injected context dependency is unavailable."""
+
+    def __init__(self, dependency: str) -> None:
+        super().__init__(
+            "context dependency is unavailable.",
+            "CONTEXT_DEPENDENCY_UNAVAILABLE",
+            {"dependency": dependency},
+        )
+
+
 class AIProviderError(EcosError):
     """Base error raised by an external AI provider adapter."""
 

@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from uuid import UUID
 
 from ecos.context import (
+    ContextBuildRequest,
     ContextElement,
     ContextObject,
     ContextPriority,
@@ -115,17 +116,27 @@ class FakeMemoryRepository(MemoryRepository):
         self,
         query: str,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """Search stored memories using deterministic in-memory filters."""
         normalized_query = query.lower().strip()
-        return [
+        memories = [
             memory
-            for memory in self.list(memory_type=memory_type, tags=tags)
+            for memory in self.list(
+                organization_id=organization_id,
+                memory_type=memory_type,
+                tags=tags,
+                limit=None,
+            )
             if normalized_query in memory.title.lower()
             or normalized_query in memory.description.lower()
         ]
+        if limit is not None:
+            return memories[:limit]
+        return memories
 
     def update(self, memory: MemoryObject) -> MemoryObject:
         """Update an existing memory object in memory."""
@@ -139,11 +150,19 @@ class FakeMemoryRepository(MemoryRepository):
     def list(
         self,
         *,
+        organization_id: UUID | None = None,
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
+        limit: int | None = None,
     ) -> list[MemoryObject]:
         """List stored memories using deterministic in-memory filters."""
         memories = list(self.memories.values())
+        if organization_id is not None:
+            memories = [
+                memory
+                for memory in memories
+                if memory.organization_id == organization_id
+            ]
         if memory_type is not None:
             memories = [memory for memory in memories if memory.type == memory_type]
         if tags is not None:
@@ -151,6 +170,8 @@ class FakeMemoryRepository(MemoryRepository):
             memories = [
                 memory for memory in memories if required_tags.issubset(memory.tags)
             ]
+        if limit is not None:
+            memories = memories[:limit]
         return memories
 
 
@@ -176,8 +197,10 @@ class FakeContextProvider(ContextProvider):
         self._objective = objective
         return self
 
-    def build(self) -> ContextObject:
+    def build(self, request: ContextBuildRequest | None = None) -> ContextObject:
         """Build a deterministic context object."""
+        if request is not None:
+            self.configure(request.session_id, request.objective)
         if self._session_id is None or self._objective is None:
             msg = "fake context provider is not configured"
             raise RuntimeError(msg)

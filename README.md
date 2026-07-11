@@ -97,11 +97,15 @@ como JSON estruturado validado, sem solicitar ou persistir cadeia privada de pen
 
 ## Context Engine
 
-A arquitetura inicial do Context Engine está em `backend/src/ecos/context/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa banco de dados, Knowledge Graph, busca vetorial ou LLM.
+O Context Engine real está em `backend/src/ecos/context/` e monta um Unified Context tipado a partir do objetivo, dados da sessão, restrições, políticas, recursos, sinais externos fornecidos e memória organizacional. Ele não usa LLM, não importa OpenAI, não depende de `AIProvider`, não recomenda, não raciocina e não executa ações.
+
+A seleção é feita exclusivamente pelo Container: com `ECOS_MEMORY_REPOSITORY=fake`, o runtime demonstrativo preserva `FakeContextProvider` e mantém o comportamento público de `/runtime/demo`; com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta `ContextEngine` com o `MemoryRepository` configurado. A recuperação de memória é sempre escopada por `organization_id`, mantém referências aos objetos originais e rejeita qualquer memória retornada de outra organização.
+
+Relevância, confiança e completude são calculadas de forma determinística e testável. A relevância considera correspondência com objetivo, entidades, políticas/restrições, tipo/importância da memória, confiança e recência, sem embeddings, pgvector, busca web, Knowledge Graph ou chamadas externas. Lacunas de contexto permanecem explícitas em `missing_context`; elas reduzem `confidence` e `completeness` em vez de serem ocultadas.
 
 ## Memory Engine
 
-O Memory Engine preserva o contrato `MemoryRepository` e oferece persistência em PostgreSQL via SQLAlchemy 2 e asyncpg. O fake continua como padrão; defina `ECOS_MEMORY_REPOSITORY=postgres` para persistência permanente. Este estágio não implementa pgvector, busca vetorial, embeddings ou LLM.
+O Memory Engine preserva o contrato `MemoryRepository` e oferece persistência em PostgreSQL via SQLAlchemy 2 e asyncpg. O fake continua como padrão; defina `ECOS_MEMORY_REPOSITORY=postgres` para persistência permanente e para ativar o Context Engine real no Container. Memórias podem carregar `organization_id`; o Context Engine exige esse escopo para recuperar contexto sem vazamento entre organizações. Este estágio não implementa pgvector, busca vetorial, embeddings ou LLM.
 
 ## Learning Engine
 

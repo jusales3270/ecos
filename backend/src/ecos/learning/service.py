@@ -42,6 +42,7 @@ class LearningService:
         if approved:
             memory = self._memory_service.store(
                 MemoryObject(
+                    organization_id=candidate.organization_id,
                     type=candidate.memory_type,
                     title=candidate.title,
                     description=candidate.description,
