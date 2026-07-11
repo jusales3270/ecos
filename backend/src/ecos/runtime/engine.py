@@ -9,7 +9,14 @@ from ecos.debate import DebateService
 from ecos.decision import DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
 from ecos.domain.enums import SessionStatus
-from ecos.events import Event, EventBus, EventPriority, EventService, EventType
+from ecos.events import (
+    Event,
+    EventBus,
+    EventMetadata,
+    EventPriority,
+    EventService,
+    EventType,
+)
 from ecos.execution import (
     ConnectorRegistry,
     ExecutionEngine,
@@ -27,6 +34,17 @@ from ecos.governance import (
 )
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService
+from ecos.observability import (
+    AlertProjector,
+    AuditProjector,
+    InMemoryAuditRepository,
+    InMemoryEventStore,
+    InMemoryObservabilityRepository,
+    MetricProjector,
+    RedactionPolicy,
+    StructuredLogProjector,
+    TraceProjector,
+)
 from ecos.observation import (
     InMemoryFeedbackProvider,
     InMemoryMeasurementProvider,
@@ -155,7 +173,22 @@ class CognitivePipeline:
         ai_service.register(ProviderType.CUSTOM, ai_provider, default=True)
 
         memory_service = MemoryService(memory_repository)
-        event_service = EventService(event_bus)
+        redaction_policy = RedactionPolicy()
+        event_store = InMemoryEventStore(redaction_policy)
+        audit_repository = InMemoryAuditRepository()
+        observability_repository = InMemoryObservabilityRepository()
+        event_service = EventService(
+            event_bus,
+            event_store,
+            projectors=(
+                AuditProjector(audit_repository),
+                MetricProjector(observability_repository),
+                TraceProjector(observability_repository),
+                AlertProjector(observability_repository),
+                StructuredLogProjector(observability_repository),
+            ),
+            redaction_policy=redaction_policy,
+        )
         context_service = ContextService(context_provider)
         reasoning_service = ReasoningService(reasoning_provider)
         specialist_service = SpecialistService(
@@ -323,7 +356,12 @@ class CognitivePipeline:
                 context=execution.managed_session.context,
             )
         )
-        self._publish(EventType.SESSION_COMPLETED, session_id, {"status": "completed"})
+        self._publish(
+            EventType.SESSION_COMPLETED,
+            session_id,
+            execution.cognitive_session.organization_id,
+            {"status": "completed"},
+        )
 
         return RuntimeResult(
             session_id=str(session_id),
@@ -374,6 +412,7 @@ class CognitivePipeline:
         self._publish(
             EventType.SESSION_CREATED,
             cognitive_session.id,
+            cognitive_session.organization_id,
             {"objective": normalized_objective},
         )
         return ExecutionContext(
@@ -545,6 +584,7 @@ class CognitivePipeline:
         self._publish(
             EventType.SESSION_UPDATED,
             execution.cognitive_session.id,
+            execution.cognitive_session.organization_id,
             {"status": lifecycle_status.value, "progress": progress},
         )
 
@@ -572,6 +612,7 @@ class CognitivePipeline:
         self,
         event_type: EventType,
         session_id: UUID,
+        organization_id: UUID,
         payload: dict[str, str | int | float | bool | None],
     ) -> None:
         """Publish and dispatch a runtime event through the event service."""
@@ -580,7 +621,9 @@ class CognitivePipeline:
                 event_type=event_type,
                 source="runtime",
                 session_id=session_id,
-                payload=payload,
+                organization_id=organization_id,
+                payload={"organization_id": str(organization_id), **payload},
+                metadata=EventMetadata(correlation_id=session_id),
                 priority=EventPriority.NORMAL,
             )
         )

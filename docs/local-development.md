@@ -43,6 +43,8 @@ curl -X POST http://127.0.0.1:8000/runtime/demo \
 
 O fluxo demo preserva o mesmo resultado público e usa providers cognitivos Fake e, por padrão, repositórios em memória. O Runtime cria a Session, solicita o `CognitivePlan` e entrega Plan + Session ao Orchestrator real. O Orchestrator coordena Context, Reasoning, Specialists, Debate, Simulation, Decision Support e Learning por executors injetados; o resultado cognitivo passa pelo Learning Engine antes de virar memória.
 
+O demo também usa a Observability Layer em memória por padrão. Eventos aceitos pelo `EventService` são validados, redigidos, recebem fingerprint SHA-256 determinístico, são persistidos em `InMemoryEventStore`, projetados para auditoria/métricas/traces/logs/alertas e só então publicados no Event Bus. A resposta pública de `/runtime/demo` permanece exatamente a mesma: `status="completed"`, recommendation `Proceed using ECOS context, reasoning, debate and governance.` e `confidence=0.91`.
+
 Com `ECOS_MEMORY_REPOSITORY=fake`, o Container mantém `FakeContextProvider` para o runtime demo. Com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta o Context Engine real, que constrói contexto somente a partir da requisição da sessão e da memória organizacional escopada por `organization_id`. O Context Engine não usa LLM, OpenAI, embeddings, pgvector, busca web ou Knowledge Graph; ele calcula relevância, confiança e completude de forma determinística e mantém lacunas explícitas em `missing_context`.
 
 ## Cognitive Planner local
@@ -63,9 +65,9 @@ O Orchestrator não realiza cognição, não chama LLM, não importa OpenAI, nã
 
 ## Governance local
 
-O Container registra o `GovernanceEngine` real e injeta `PolicyProvider`, `ApprovalPolicyProvider`, `IdentityPort`, `EventService`, relógio, gerador de IDs e `GovernanceConfig`. O Engine valida se a cognição pode prosseguir; ele não raciocina, não altera recomendações, não concede aprovação humana, não acessa PostgreSQL, não persiste auditoria e não executa ações externas.
+O Container registra o `GovernanceEngine` real e injeta `PolicyProvider`, `ApprovalPolicyProvider`, `IdentityPort`, `EventService`, relógio, gerador de IDs e `GovernanceConfig`. O Engine valida se a cognição pode prosseguir; ele não raciocina, não altera recomendações, não concede aprovação humana, não acessa PostgreSQL diretamente e não executa ações externas. Eventos de governança são projetados pela Observability Layer em `AuditRecord` persistente quando a infraestrutura de observabilidade está ativa.
 
-Políticas são versionadas, imutáveis e selecionadas de forma determinística somente quando estão `active` e vigentes. Regras são estruturadas e usam operadores allowlisted; não há `eval`, código dinâmico ou linguagem arbitrária. A avaliação produz `ComplianceReport`, `ExplainabilityReport`, `PolicyViolation`, `AuthorizationDecision`, `ApprovalRequest` quando necessário e `AuditRecord` append-only em memória. O audit trail ainda não é persistido.
+Políticas são versionadas, imutáveis e selecionadas de forma determinística somente quando estão `active` e vigentes. Regras são estruturadas e usam operadores allowlisted; não há `eval`, código dinâmico ou linguagem arbitrária. A avaliação produz `ComplianceReport`, `ExplainabilityReport`, `PolicyViolation`, `AuthorizationDecision`, `ApprovalRequest` quando necessário e audit trail append-only. A persistência de auditoria é derivada dos eventos, sem armazenar política integral, recommendation integral, reasoning integral, stack trace pública ou credenciais.
 
 Os níveis de aprovação são Level 1 a Level 5. Level 1 pode liberar continuidade cognitiva de baixo risco e baixo impacto, mas execução externa sempre exige aprovação humana explícita. Estados de aprovação incluem `pending`, `partially_approved`, `granted`, `rejected`, `expired`, `revoked` e `cancelled`. Papéis, aprovadores distintos, quorum, rejeição, expiração e revogação são validados pelo Engine com uma identidade previamente validada pelo `IdentityPort`; login, JWT, OAuth e autenticação real não pertencem a esta sprint.
 
@@ -89,7 +91,7 @@ Artifacts são referências tipadas, não binários no resultado. Métricas, log
 
 O Container registra `ObservationEngine` real com `InMemoryMeasurementProvider`, `InMemoryFeedbackProvider`, idempotência em memória, `EventService`, relógio UTC e gerador de IDs injetados. Observation mede fatos organizacionais fornecidos ao request: compara `ExpectedOutcome` com `Measurement`, calcula desvios, anomalias determinísticas, quality e score normalizado. Ausência de métrica obrigatória gera `inconclusive` ou falha de expectativa, nunca sucesso artificial.
 
-Observabilidade técnica persistente da plataforma, tracing distribuído, dashboards, alertas, coleta de infraestrutura e polling ficam fora desta sprint e pertencem ao Sprint 17D. Nenhum ERP, CRM, API externa, navegador, MCP, LLM, embedding, migration ou PostgreSQL obrigatório foi adicionado.
+Observation Engine e Observability Layer são separados. Observation mede resultados organizacionais declarados; Observability mede funcionamento técnico e cognitivo do E.C.O.S. A Observability Layer persiste eventos e projeções, mas não recalcula outcome score, quality, LearningCandidate, memória ou causalidade. Dashboards, tracing vendor, polling, jobs em background, notificações externas, OII, Knowledge Graph, autenticação e RBAC não foram implementados.
 
 O `LearningService` existente foi preservado e estendido para receber `ObservationResult` por contrato. Ele cria `LearningCandidate` somente a partir de fatos observados, preserva correlação como correlação, exige evidência e qualidade mínimas, aplica política de revisão humana, detecta padrões apenas com recorrência configurada e grava no Memory Engine apenas propostas validadas. Confiança é calibrada por proposta; não há sobrescrita histórica.
 
@@ -146,6 +148,27 @@ uv run uvicorn ecos.main:app --reload
 ```
 
 `ECOS_SESSION_REPOSITORY` e `ECOS_MEMORY_REPOSITORY` podem ser configurados independentemente como `fake` ou `postgres`; ambos usam `fake` por padrão. Quando memória PostgreSQL está ativa, cada consulta de contexto é restrita ao `organization_id`; falhas de memória e retornos de outra organização são erros explícitos, sem fallback silencioso.
+
+## Observability persistente opcional
+
+O modo padrão da observabilidade é memória:
+
+```bash
+export ECOS_OBSERVABILITY_REPOSITORY=memory
+```
+
+Para persistir Event Store, Audit Trail, métricas, traces/spans, logs estruturados, alert signals e health snapshots em PostgreSQL, use o mesmo `ECOS_DATABASE_URL` e aplique a migration `20260711_04_create_observability_tables.py`:
+
+```bash
+cd backend
+export ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos
+export ECOS_OBSERVABILITY_REPOSITORY=postgres
+uv run alembic upgrade head
+```
+
+Essa seleção é explícita e não faz fallback silencioso para memória. As consultas são escopadas por `organization_id`; eventos podem ser filtrados por Session, `correlation_id`, tipo, categoria, fonte, tempo e sequência. Replay suporta `read_only` e `safe_projection`: não repersiste eventos, não publica no bus, não chama Execution/Connectors, não envia notificações e só usa projectors replay-safe.
+
+O audit trail persistente é append-only e tamper-evident por fingerprint determinístico individual; ele não é apresentado como tamper-proof. Alertas são apenas registros internos, sem e-mail, Slack, webhook ou escalation externo.
 
 Para reverter todas as migrations:
 

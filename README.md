@@ -54,7 +54,15 @@ Não versione a chave. Streaming, tools, web/file search, function calling e Rea
 
 ## Event Bus
 
-A arquitetura inicial do Event Bus está em `backend/src/ecos/events/` e define apenas modelos, interface de barramento e serviço de comunicação por abstração. Esta camada ainda não implementa RabbitMQ, Kafka, Redis Pub/Sub, filas ou eventos reais.
+A arquitetura de eventos está em `backend/src/ecos/events/` e a infraestrutura persistente de eventos, auditoria e observabilidade está em `backend/src/ecos/observability/`. Eventos representam fatos imutáveis: correções geram novos eventos com nova identidade e, quando aplicável, `causation_id`; eventos históricos não são atualizados, substituídos ou apagados pelo Event Store.
+
+O `EventService` central valida, aplica redaction, calcula fingerprint SHA-256 determinístico, persiste no `EventStore`, aciona projectors e só depois publica no `EventBus`. O modo padrão usa `InMemoryEventStore`, `InMemoryAuditRepository` e `InMemoryObservabilityRepository`, sem arquivo, banco ou estado global entre testes. PostgreSQL é opcional via `ECOS_OBSERVABILITY_REPOSITORY=postgres` e reutiliza `ECOS_DATABASE_URL`, SQLAlchemy async e Alembic existentes, sem banco separado e sem fallback silencioso.
+
+Consultas de eventos são escopadas por `organization_id` e podem filtrar por Session, `correlation_id`, tipo, categoria, fonte, tempo e sequência. A ordenação padrão é `stored_sequence`, `occurred_at`, `event_id`. Replay suporta `read_only` e `safe_projection`: ele não repersiste eventos, não publica no bus, não executa Execution, Connectors, notificações ou ações empresariais, e só chama projectors marcados como replay-safe.
+
+Audit trail persistente é projetado de eventos auditáveis de Governance, Execution, Observation, Learning, Memory e Session. A integridade usa fingerprint determinístico individual e é documentada como tamper-evident, não tamper-proof. Métricas técnicas/cognitivas, logs estruturados seguros, traces/spans por `correlation_id`, health snapshots e alert signals são derivados de fatos; alertas são armazenados, mas não enviados por e-mail, Slack, webhook ou serviço externo. Eventos internos de observabilidade não criam cadeia recursiva infinita: o `EventService` usa projectors e registros internos em vez de emitir/persistir `EVENT_STORED` sobre si mesmo.
+
+Observation Engine e Observability Layer têm responsabilidades distintas. Observation Engine mede resultados organizacionais declarados. Observability Layer mede o funcionamento técnico e cognitivo do E.C.O.S. O Sprint 17D não implementa OII, dashboards, tracing vendor, Prometheus/Grafana/Datadog/Sentry, filas distribuídas, Knowledge Graph, autenticação ou RBAC.
 
 ## Cognitive Session Manager
 
@@ -76,7 +84,7 @@ O Governance Engine real está em `backend/src/ecos/governance/` e valida se a c
 
 Políticas organizacionais são imutáveis, versionadas, escopadas por `organization_id` e selecionadas de forma determinística por vigência, status `active`, ação aplicável, prioridade, `policy_id` e versão. Políticas expiradas, ausentes ou versões ativas ambíguas não são ignoradas. Regras usam somente operadores estruturados allowlisted (`equals`, comparações numéricas, `in`, `contains`, `exists`, `all`, `any`, `not` e equivalentes negativos), sem `eval`, templates executáveis ou linguagem arbitrária.
 
-O resultado inclui `ComplianceReport`, `ExplainabilityReport`, violações seguras, autorização escopada por Organization, Session, Plan e ação, requisitos de aprovação, request de aprovação quando necessário e audit trail append-only em memória para persistência futura. Explainability exige objetivo, evidência, resumo de raciocínio, assumptions, riscos, alternativas, confidence 0–1, lacunas e recomendação; o Engine valida presença, estrutura e rastreabilidade básica, não a qualidade intelectual do raciocínio.
+O resultado inclui `ComplianceReport`, `ExplainabilityReport`, violações seguras, autorização escopada por Organization, Session, Plan e ação, requisitos de aprovação, request de aprovação quando necessário e audit trail append-only. A infraestrutura de observabilidade projeta e persiste `AuditRecord` a partir dos eventos de governança sem armazenar política integral, recommendation integral, reasoning integral, stack trace pública ou credenciais. Explainability exige objetivo, evidência, resumo de raciocínio, assumptions, riscos, alternativas, confidence 0–1, lacunas e recomendação; o Engine valida presença, estrutura e rastreabilidade básica, não a qualidade intelectual do raciocínio.
 
 Os níveis oficiais de aprovação são Level 1 a Level 5. Level 1 pode autorizar automaticamente continuidade cognitiva de baixo risco e baixo impacto, mas não autoriza execução externa. Execution sempre exige autorização válida e aprovação humana explícita quando solicitada. Requests de aprovação passam pelos estados `pending`, `partially_approved`, `granted`, `rejected`, `expired`, `revoked` e `cancelled`; uma pessoa não conta duas vezes, papéis e quorum são validados, rejeição bloqueia e revogação invalida autorização dependente. A autenticação real não foi implementada: o `IdentityPort` consome uma identidade previamente validada por uma porta injetada.
 
@@ -90,7 +98,7 @@ Toda comunicação operacional passa por `ExecutionConnector` registrado em `Con
 
 Os contratos tipados cobrem execuções `human`, `system`, `api`, `agent`, `browser` e `mcp`, `ExecutionPlan` com DAG validado, constraints, recursos, janela, timeout, retry, fallback autorizado, artifacts por referência, métricas, logs seguros, timeline append-only, falhas classificadas, idempotência em memória e rollback explícito. `dry_run` é o padrão; `live` exige autorização explícita e connector com suporte a live.
 
-Human execution cria `HumanTask` em memória e retorna `paused` com `ExecutionResumeState`; não finge conclusão. Rollback nunca é inventado: roda em ordem reversa apenas para etapas concluídas com `RollbackAction` explícita e autorização de rollback. Resultados, logs, timeline, artifacts, idempotência e estado de retomada ainda não são persistidos neste sprint.
+Human execution cria `HumanTask` em memória e retorna `paused` com `ExecutionResumeState`; não finge conclusão. Rollback nunca é inventado: roda em ordem reversa apenas para etapas concluídas com `RollbackAction` explícita e autorização de rollback. Eventos de Execution são persistidos e projetados em auditoria, métricas, logs e traces quando passam pelo `EventService`. Resultados, timeline local, artifacts, idempotência e estado de retomada continuam pertencendo à Execution Layer; a Observability Layer armazena apenas fatos seguros e referências, nunca parâmetros integrais, credenciais, conteúdo binário ou payload integral de Connector.
 
 ## Cognitive Planner
 
@@ -143,7 +151,7 @@ O Memory Engine preserva o contrato `MemoryRepository` e oferece persistência e
 
 O Observation Engine em `backend/src/ecos/observation/` mede resultados organizacionais declarados, comparando expectativas explícitas com medições, evidências e feedback fornecidos por providers injetados. Ausência de dados não equivale a sucesso; `completed` da observação significa processamento concluído, não outcome organizacional bem-sucedido. Ele não infere causalidade, não gera recomendação, não altera execução, plano ou decisão, não acessa Container, variáveis de ambiente, PostgreSQL, SQLAlchemy, OpenAI, `AIProvider` ou sistemas externos.
 
-Os providers padrão são determinísticos e em memória. Esta sprint não integra fonte externa real, polling, jobs em background, dashboards, alertas, tracing distribuído ou observabilidade técnica persistente da plataforma; esse escopo pertence ao Sprint 17D.
+Os providers padrão são determinísticos e em memória. A Observability Layer agora persiste eventos e projeções técnicas/cognitivas, mas não substitui o Observation Engine: ela não recalcula outcome score, quality, LearningCandidate ou memória, e não infere causalidade.
 
 ## Learning Engine
 
@@ -197,6 +205,24 @@ ECOS_RUN_OPENAI_TESTS=1 ECOS_OPENAI_API_KEY='sua-chave-local' uv run pytest -k o
 ```
 
 A suíte padrão usa cliente mockado e não realiza chamadas à OpenAI.
+
+### Observability
+
+```bash
+cd backend
+export ECOS_OBSERVABILITY_REPOSITORY=memory   # padrão
+```
+
+Para persistir eventos, auditoria e projeções em PostgreSQL:
+
+```bash
+cd backend
+export ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos
+export ECOS_OBSERVABILITY_REPOSITORY=postgres
+uv run alembic upgrade head
+```
+
+A migration `20260711_04_create_observability_tables.py` cria `event_records`, `audit_records`, `metric_records`, `trace_records`, `trace_spans`, `structured_log_records`, `alert_records` e `health_snapshot_records`. O modo padrão da suíte não exige PostgreSQL e `/runtime/demo` permanece compatível: `status="completed"`, recommendation `"Proceed using ECOS context, reasoning, debate and governance."` e `confidence=0.91`.
 
 ### Executar lint e formatação
 
