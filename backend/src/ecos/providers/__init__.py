@@ -9,6 +9,7 @@ from ecos.providers.models import (
     ProviderType,
     TokenUsage,
 )
+from ecos.providers.openai_provider import OpenAIProvider
 from ecos.providers.provider import AIProvider
 from ecos.providers.registry import ProviderRegistry
 from ecos.providers.service import AIService
@@ -18,6 +19,7 @@ __all__ = [
     "AIRequest",
     "AIResponse",
     "AIService",
+    "OpenAIProvider",
     "ProviderCapabilities",
     "ProviderHealth",
     "ProviderRegistry",

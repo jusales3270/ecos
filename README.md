@@ -37,7 +37,20 @@ O primeiro fluxo cognitivo executável está em `backend/src/ecos/runtime/` e co
 
 ## AI Provider Abstraction
 
-A arquitetura inicial da AI Provider Abstraction está em `backend/src/ecos/providers/` e define apenas modelos, interface de provider, registry e serviço por abstração. Esta camada ainda não implementa chamadas HTTP, SDKs, OpenAI, Anthropic, Google, Ollama ou qualquer provedor concreto.
+A AI Provider Abstraction está em `backend/src/ecos/providers/` e mantém os Engines desacoplados de SDKs externos. O provider OpenAI usa o SDK oficial e a Responses API para geração de texto; `fake` continua sendo o padrão, inclusive para testes e para o runtime demo.
+
+Para ativar a OpenAI, configure somente no ambiente local:
+
+```bash
+export ECOS_AI_PROVIDER=openai
+export ECOS_OPENAI_API_KEY='sua-chave-local'
+export ECOS_OPENAI_MODEL=gpt-4.1-mini
+export ECOS_OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+export ECOS_OPENAI_TIMEOUT_SECONDS=30
+export ECOS_OPENAI_MAX_RETRIES=2
+```
+
+Não versione a chave. Streaming, tools, web/file search, function calling e Realtime não são suportados neste estágio. O método contratual de embeddings está implementado no provider, mas não está integrado ao Memory Engine.
 
 ## Event Bus
 
@@ -121,6 +134,14 @@ Os testes PostgreSQL são condicionais. Para executá-los contra um banco descar
 ```bash
 ECOS_TEST_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos uv run pytest
 ```
+
+Um smoke test real da OpenAI existe apenas como opt-in e só executa quando as duas variáveis estão presentes:
+
+```bash
+ECOS_RUN_OPENAI_TESTS=1 ECOS_OPENAI_API_KEY='sua-chave-local' uv run pytest -k optional_real_openai
+```
+
+A suíte padrão usa cliente mockado e não realiza chamadas à OpenAI.
 
 ### Executar lint e formatação
 
