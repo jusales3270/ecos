@@ -1,5 +1,7 @@
 """Registry for ECOS cognitive specialists."""
 
+from __future__ import annotations
+
 from uuid import UUID
 
 from ecos.specialists.models import Specialist, SpecialistType

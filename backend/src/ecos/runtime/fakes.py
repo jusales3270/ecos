@@ -34,7 +34,6 @@ from ecos.events import Event, EventBus, EventEnvelope, EventSubscription
 from ecos.memory import MemoryObject, MemoryRepository, MemoryType
 from ecos.orchestrator import (
     EngineExecution,
-    ExecutionMode,
     ExecutionPlan,
     ExecutionResult,
     ExecutionState,
@@ -52,8 +51,15 @@ from ecos.planner import (
     PlanningStrategy,
     SpecialistSelection,
 )
-from ecos.providers import AIProvider, AIRequest, AIResponse, ProviderHealth
-from ecos.providers import ProviderStatus, ProviderType, TokenUsage
+from ecos.providers import (
+    AIProvider,
+    AIRequest,
+    AIResponse,
+    ProviderHealth,
+    ProviderStatus,
+    ProviderType,
+    TokenUsage,
+)
 from ecos.reasoning import (
     Alternative,
     Hypothesis,
@@ -61,7 +67,6 @@ from ecos.reasoning import (
     ReasoningEvidence,
     ReasoningProvider,
     ReasoningResult,
-    ReasoningType,
     Tradeoff,
 )
 from ecos.session import (
@@ -143,7 +148,30 @@ class FakeMemoryRepository(MemoryRepository):
 class FakeContextProvider(ContextProvider):
     """Fake context provider that builds deterministic context objects."""
 
+    def __init__(
+        self,
+        session_id: UUID | None = None,
+        objective: Objective | None = None,
+    ) -> None:
+        """Initialize the provider with optional runtime session data."""
+        self._session_id = session_id
+        self._objective = objective
 
+    def configure(
+        self,
+        session_id: UUID,
+        objective: Objective,
+    ) -> "FakeContextProvider":
+        """Configure runtime session data without creating a new provider."""
+        self._session_id = session_id
+        self._objective = objective
+        return self
+
+    def build(self) -> ContextObject:
+        """Build a deterministic context object."""
+        if self._session_id is None or self._objective is None:
+            msg = "fake context provider is not configured"
+            raise RuntimeError(msg)
         element = ContextElement(
             source_type=ContextSourceType.USER,
             priority=ContextPriority.HIGH,
@@ -269,8 +297,7 @@ class FakeReasoningProvider(ReasoningProvider):
             Hypothesis(
                 statement="A structured execution path improves decision quality.",
                 rationale=(
-                    "The objective is explicit: "
-                    f"{context.context.objective.title}"
+                    f"The objective is explicit: {context.context.objective.title}"
                 ),
                 confidence=0.9,
             )

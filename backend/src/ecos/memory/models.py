@@ -28,7 +28,9 @@ class MemoryModel(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
 
-    id: UUID = Field(default_factory=uuid4, description="Unique memory model identifier.")
+    id: UUID = Field(
+        default_factory=uuid4, description="Unique memory model identifier."
+    )
     created_at: datetime = Field(
         default_factory=utc_now,
         description="Timezone-aware UTC timestamp for model creation.",

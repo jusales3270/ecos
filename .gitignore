@@ -10,7 +10,11 @@ Thumbs.db
 
 # Environment and secrets
 .env
-
+**/.env
+.env.*
+**/.env.*
+!.env.example
+!**/.env.example
 *.pem
 *.key
 

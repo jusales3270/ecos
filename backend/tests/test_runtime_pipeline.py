@@ -2,18 +2,16 @@
 
 from uuid import UUID
 
-from fastapi.testclient import TestClient
+import pytest
 
 from ecos.context import ContextProvider
 from ecos.debate import DebateProvider
 from ecos.decision import DecisionProvider
 from ecos.events import EventBus, EventType
-
-from ecos.main import app
 from ecos.memory import MemoryRepository, MemoryType
 from ecos.orchestrator import OrchestratorProvider
 from ecos.planner import PlannerProvider
-from ecos.providers import AIProvider
+from ecos.providers import AIProvider, ProviderStatus, ProviderType
 from ecos.reasoning import ReasoningProvider
 from ecos.runtime import (
     CognitivePipeline,
@@ -30,7 +28,7 @@ from ecos.runtime import (
     FakeSpecialistProvider,
     RuntimeEngine,
 )
-from ecos.session import SessionLifecycleStatus, SessionRepository
+from ecos.session import SessionLifecycleStatus, SessionRepository, TransitionType
 from ecos.specialists import SpecialistProvider
 
 
@@ -49,9 +47,9 @@ def test_fake_runtime_implementations_satisfy_architecture_interfaces() -> None:
     assert issubclass(FakeAIProvider, AIProvider)
 
 
-def test_runtime_engine_run_returns_completed_recommendation() -> None:
-    """RuntimeEngine runs the full fake cognitive flow without external calls."""
-
+def test_runtime_engine_with_fakes_returns_completed_recommendation() -> None:
+    """RuntimeEngine.with_fakes runs the complete deterministic pipeline."""
+    result = RuntimeEngine.with_fakes().run("Improve organizational decision quality")
 
     assert UUID(result.session_id)
     assert result.status == "completed"
@@ -61,9 +59,9 @@ def test_runtime_engine_run_returns_completed_recommendation() -> None:
     assert result.confidence == 0.91
 
 
-def test_cognitive_pipeline_records_memory_events_and_session_completion() -> None:
-    """CognitivePipeline records memory, events and final session state."""
-
+def test_cognitive_pipeline_with_fakes_executes_full_flow() -> None:
+    """CognitivePipeline.with_fakes records session, memory, events and snapshot."""
+    pipeline = CognitivePipeline.with_fakes()
     result = pipeline.run("Coordinate a governed market expansion decision")
     session_id = UUID(result.session_id)
 
@@ -78,48 +76,66 @@ def test_cognitive_pipeline_records_memory_events_and_session_completion() -> No
     assert managed_session.state.lifecycle_status is SessionLifecycleStatus.COMPLETED
     assert managed_session.state.progress == 1.0
     assert len(memories) == 1
+    assert memories[0].type is MemoryType.EPISODIC
     assert memories[0].confidence == 0.91
-    assert EventType.SESSION_CREATED in event_types
-    assert EventType.CONTEXT_CREATED in event_types
-    assert EventType.REASONING_COMPLETED in event_types
-    assert EventType.SPECIALIST_CONTRIBUTED in event_types
-    assert EventType.DEBATE_COMPLETED in event_types
-    assert EventType.RECOMMENDATION_CREATED in event_types
-    assert EventType.MEMORY_UPDATED in event_types
-    assert EventType.EXECUTION_STARTED in event_types
-    assert EventType.EXECUTION_COMPLETED in event_types
-    assert EventType.SESSION_COMPLETED in event_types
-    assert len(transitions) == 3
+    assert event_types == [
+        EventType.SESSION_CREATED,
+        EventType.SESSION_UPDATED,
+        EventType.EXECUTION_STARTED,
+        EventType.EXECUTION_COMPLETED,
+        EventType.SESSION_UPDATED,
+        EventType.CONTEXT_CREATED,
+        EventType.SESSION_UPDATED,
+        EventType.REASONING_COMPLETED,
+        EventType.SPECIALIST_CONTRIBUTED,
+        EventType.SESSION_UPDATED,
+        EventType.DEBATE_COMPLETED,
+        EventType.SESSION_UPDATED,
+        EventType.RECOMMENDATION_CREATED,
+        EventType.MEMORY_UPDATED,
+        EventType.SESSION_UPDATED,
+        EventType.SESSION_COMPLETED,
+    ]
+    assert [transition.transition_type for transition in transitions] == [
+        TransitionType.INITIALIZE,
+        TransitionType.START_PLANNING,
+        TransitionType.COMPLETE,
+    ]
+    assert len(pipeline.session_repository.snapshots) == 1
+    assert pipeline.session_repository.snapshots[0].session_id == session_id
 
 
 def test_runtime_engine_rejects_blank_objective() -> None:
     """RuntimeEngine rejects blank objectives before creating a session."""
-    try:
-
-    except ValueError as exc:
-        assert str(exc) == "objective cannot be blank"
-    else:
-        raise AssertionError("blank objective did not raise ValueError")
+    with pytest.raises(ValueError, match="objective cannot be blank"):
+        RuntimeEngine.with_fakes().run("   ")
 
 
-def test_runtime_demo_endpoint_returns_expected_contract() -> None:
-    """POST /runtime/demo returns the expected public response contract."""
-    client = TestClient(app)
+def test_pipeline_factory_does_not_duplicate_repositories_or_event_bus() -> None:
+    """Pipeline services reuse the same repositories and event bus references."""
+    pipeline = CognitivePipeline.with_fakes()
 
-    response = client.post(
-        "/runtime/demo",
-        json={"objective": "Improve onboarding decisions"},
-    )
+    assert pipeline.memory_service._repository is pipeline.memory_repository
+    assert pipeline.session_service._repository is pipeline.session_repository
+    assert pipeline.event_service._event_bus is pipeline.event_bus
+    assert pipeline.context_service._provider is pipeline.context_provider
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert UUID(payload["session_id"])
-    assert payload == {
-        "session_id": payload["session_id"],
-        "status": "completed",
-        "recommendation": (
-            "Proceed using ECOS context, reasoning, debate and governance."
-        ),
-        "confidence": 0.91,
-    }
 
+def test_fake_context_provider_fails_without_configuration() -> None:
+    """FakeContextProvider raises a clear error when build is called too early."""
+    provider = FakeContextProvider()
+
+    with pytest.raises(RuntimeError, match="fake context provider is not configured"):
+        provider.build()
+
+
+def test_fake_ai_provider_is_registered_as_default_provider() -> None:
+    """CognitivePipeline.with_fakes registers FakeAIProvider as the default."""
+    pipeline = CognitivePipeline.with_fakes()
+    provider = pipeline.ai_service.default_provider()
+    health = pipeline.ai_service.health(ProviderType.CUSTOM)
+
+    assert provider is pipeline.ai_provider
+    assert isinstance(provider, FakeAIProvider)
+    assert health.provider is ProviderType.CUSTOM
+    assert health.status is ProviderStatus.AVAILABLE

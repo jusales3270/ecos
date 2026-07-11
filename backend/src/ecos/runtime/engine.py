@@ -7,7 +7,8 @@ from ecos.debate import Debate, DebateService
 from ecos.decision import DecisionService
 from ecos.domain import CognitiveSession, Objective, Organization, SessionStage
 from ecos.domain.enums import SessionStatus
-
+from ecos.events import Event, EventBus, EventPriority, EventService, EventType
+from ecos.memory import MemoryObject, MemoryRepository, MemoryService, MemoryType
 from ecos.orchestrator import (
     ExecutionMode,
     ExecutionPlan,
@@ -17,7 +18,7 @@ from ecos.orchestrator import (
     OrchestratorService,
 )
 from ecos.planner import CognitivePlan, ExecutionStrategy, PlannerService
-
+from ecos.providers import AIProvider, AIService, ProviderRegistry, ProviderType
 from ecos.reasoning import ReasoningContext, ReasoningService, ReasoningType
 from ecos.runtime.fakes import (
     FakeAIProvider,
@@ -37,7 +38,7 @@ from ecos.session import (
     ManagedSession,
     SessionContext,
     SessionLifecycleStatus,
-
+    SessionRepository,
     SessionService,
     SessionSnapshot,
     SessionState,
@@ -50,7 +51,83 @@ from ecos.specialists import SpecialistRegistry, SpecialistService
 class CognitivePipeline:
     """Coordinates the first deterministic ECOS cognitive pipeline."""
 
+    def __init__(
+        self,
+        *,
+        memory_repository: MemoryRepository,
+        session_repository: SessionRepository,
+        event_bus: EventBus,
+        context_provider: FakeContextProvider,
+        ai_provider: AIProvider,
+        memory_service: MemoryService,
+        session_service: SessionService,
+        event_service: EventService,
+        context_service: ContextService,
+        planner_service: PlannerService,
+        reasoning_service: ReasoningService,
+        specialist_service: SpecialistService,
+        debate_service: DebateService,
+        decision_service: DecisionService,
+        orchestrator_service: OrchestratorService,
+        ai_service: AIService,
+    ) -> None:
+        """Initialize the pipeline with externally registered dependencies."""
+        self.memory_repository = memory_repository
+        self.session_repository = session_repository
+        self.event_bus = event_bus
+        self.context_provider = context_provider
+        self.ai_provider = ai_provider
+        self.memory_service = memory_service
+        self.session_service = session_service
+        self.event_service = event_service
+        self.context_service = context_service
+        self.planner_service = planner_service
+        self.reasoning_service = reasoning_service
+        self.specialist_service = specialist_service
+        self.debate_service = debate_service
+        self.decision_service = decision_service
+        self.orchestrator_service = orchestrator_service
+        self.ai_service = ai_service
 
+    @classmethod
+    def with_fakes(cls) -> "CognitivePipeline":
+        """Create a standalone fake pipeline for tests and demos."""
+        memory_repository = FakeMemoryRepository()
+        session_repository = FakeSessionRepository()
+        event_bus = FakeEventBus()
+        context_provider = FakeContextProvider()
+        planner_provider = FakePlannerProvider()
+        reasoning_provider = FakeReasoningProvider()
+        specialist_provider = FakeSpecialistProvider()
+        debate_provider = FakeDebateProvider()
+        decision_provider = FakeDecisionProvider()
+        orchestrator_provider = FakeOrchestratorProvider()
+        ai_provider = FakeAIProvider()
+
+        ai_service = AIService(ProviderRegistry())
+        ai_service.register(ProviderType.CUSTOM, ai_provider, default=True)
+
+        return cls(
+            memory_repository=memory_repository,
+            session_repository=session_repository,
+            event_bus=event_bus,
+            context_provider=context_provider,
+            ai_provider=ai_provider,
+            memory_service=MemoryService(memory_repository),
+            session_service=SessionService(session_repository),
+            event_service=EventService(event_bus),
+            context_service=ContextService(context_provider),
+            planner_service=PlannerService(planner_provider),
+            reasoning_service=ReasoningService(reasoning_provider),
+            specialist_service=SpecialistService(
+                specialist_provider,
+                SpecialistRegistry(),
+            ),
+            debate_service=DebateService(debate_provider),
+            decision_service=DecisionService(decision_provider),
+            orchestrator_service=OrchestratorService(orchestrator_provider),
+            ai_service=ai_service,
+        )
 
     def run(self, objective: str) -> RuntimeResult:
         """Run the deterministic cognitive pipeline for an objective."""
@@ -86,7 +163,12 @@ class CognitivePipeline:
             active_engine="context",
             progress=0.2,
         )
-
+        self.context_provider.configure(
+            session_id,
+            execution.cognitive_session.objective,
+        )
+        context = self.context_service.build()
+        if not self.context_service.validate(context):
             msg = "runtime context validation failed"
             raise RuntimeError(msg)
         execution.context = context
@@ -199,7 +281,6 @@ class CognitivePipeline:
             to_status=SessionLifecycleStatus.COMPLETED,
             reason="Runtime pipeline completed.",
         )
-        self._publish(EventType.SESSION_COMPLETED, session_id, {"status": "completed"})
         self.session_service.save_snapshot(
             SessionSnapshot(
                 session_id=session_id,
@@ -207,6 +288,7 @@ class CognitivePipeline:
                 context=execution.managed_session.context,
             )
         )
+        self._publish(EventType.SESSION_COMPLETED, session_id, {"status": "completed"})
 
         return RuntimeResult(
             session_id=str(session_id),
@@ -405,4 +487,15 @@ class CognitivePipeline:
 class RuntimeEngine:
     """Public runtime engine entrypoint for the demo cognitive pipeline."""
 
+    def __init__(self, pipeline: CognitivePipeline) -> None:
+        """Initialize the engine with an externally provided pipeline."""
+        self.pipeline = pipeline
 
+    @classmethod
+    def with_fakes(cls) -> "RuntimeEngine":
+        """Create a standalone runtime engine backed by fake dependencies."""
+        return cls(CognitivePipeline.with_fakes())
+
+    def run(self, objective: str) -> RuntimeResult:
+        """Run the first executable ECOS cognitive pipeline."""
+        return self.pipeline.run(objective)

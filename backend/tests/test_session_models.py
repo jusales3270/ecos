@@ -1,6 +1,6 @@
 """Unit tests for ECOS Cognitive Session Manager models and abstractions."""
 
-from datetime import UTC, datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest

@@ -1,5 +1,7 @@
 """Service layer for the ECOS AI Provider abstraction."""
 
+from __future__ import annotations
+
 from collections.abc import Iterator
 
 from ecos.providers.models import AIRequest, AIResponse, ProviderHealth, ProviderType
