@@ -86,6 +86,7 @@ def test_cognitive_pipeline_with_fakes_executes_full_flow() -> None:
         EventType.SESSION_UPDATED,
         EventType.CONTEXT_CREATED,
         EventType.SESSION_UPDATED,
+        EventType.REASONING_STARTED,
         EventType.REASONING_COMPLETED,
         EventType.SPECIALIST_CONTRIBUTED,
         EventType.SESSION_UPDATED,

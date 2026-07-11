@@ -58,7 +58,13 @@ export ECOS_OPENAI_MAX_RETRIES=2
 uv run uvicorn ecos.main:app --reload
 ```
 
-Se `ECOS_AI_PROVIDER=openai` for definido sem `ECOS_OPENAI_API_KEY`, a inicialização falha com uma mensagem de configuração clara. O `/health` faz uma verificação controlada do modelo configurado e nunca retorna chaves, headers, prompts ou respostas. Não coloque chaves nos arquivos `.env.example` nem em arquivos versionados.
+Se `ECOS_AI_PROVIDER=openai` for definido sem `ECOS_OPENAI_API_KEY`, a inicialização
+falha com uma mensagem de configuração clara. Essa seleção também ativa o Reasoning Engine
+provider-backed; o Container resolve e injeta o provider pelo registry, enquanto o Engine
+permanece independente da OpenAI e do SDK. Chamadas reais só ocorrem com OpenAI
+explicitamente selecionada e configurada. O `/health` faz uma verificação controlada do
+modelo configurado e nunca retorna chaves, headers, prompts ou respostas. Não coloque
+chaves nos arquivos `.env.example` nem em arquivos versionados.
 
 O provider usa Responses API sem streaming, tools, buscas ou function calling. Embeddings atendem somente ao contrato do provider e não são conectados ao Memory Engine. O teste real é opcional:
 

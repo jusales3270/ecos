@@ -82,7 +82,12 @@ A arquitetura inicial do Specialist Framework está em `backend/src/ecos/special
 
 ## Reasoning Engine
 
-A arquitetura inicial do Reasoning Engine está em `backend/src/ecos/reasoning/` e define apenas modelos, interface de provider e serviço de orquestração por abstração. Esta camada ainda não implementa OpenAI, Anthropic, prompts, IA ou qualquer integração com LLM.
+O Reasoning Engine mantém a implementação determinística quando `ECOS_AI_PROVIDER=fake`,
+que continua sendo o padrão e preserva o resultado público do runtime demo. Ao selecionar
+`openai`, o Container resolve o provider pelo `ProviderRegistry` e o injeta no
+`AIReasoningEngine`. O Engine conhece somente o contrato genérico `AIProvider`: não importa
+o SDK, não lê chaves e não instancia nem seleciona providers. Respostas são aceitas somente
+como JSON estruturado validado, sem solicitar ou persistir cadeia privada de pensamento.
 
 ## Context Engine
 

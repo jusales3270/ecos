@@ -10,8 +10,13 @@ from ecos.core.logging import (
     set_correlation_id,
 )
 from ecos.memory import PostgresMemoryRepository
+from ecos.reasoning import AIReasoningEngine
 from ecos.runtime import RuntimeEngine
-from ecos.runtime.fakes import FakeMemoryRepository, FakeSessionRepository
+from ecos.runtime.fakes import (
+    FakeMemoryRepository,
+    FakeReasoningProvider,
+    FakeSessionRepository,
+)
 from ecos.session import PostgresSessionRepository
 
 
@@ -56,6 +61,19 @@ def test_container_registers_services_fake_providers_and_runtime() -> None:
         "providers": {"CUSTOM": True},
         "runtime": True,
     }
+    assert isinstance(container.reasoning_provider, FakeReasoningProvider)
+
+
+def test_container_selects_ai_reasoning_engine_for_openai() -> None:
+    """Container injects its registry-selected provider into AI reasoning."""
+    container = Container(
+        settings=Settings(ai_provider="openai", openai_api_key="test-placeholder")
+    )
+
+    assert isinstance(container.reasoning_provider, AIReasoningEngine)
+    assert container.reasoning_provider._provider is container.provider_registry.get(
+        container.ai_provider_type
+    )
 
 
 def test_container_selects_configured_session_repository() -> None:
