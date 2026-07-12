@@ -62,7 +62,23 @@ Consultas de eventos são escopadas por `organization_id` e podem filtrar por Se
 
 Audit trail persistente é projetado de eventos auditáveis de Governance, Execution, Observation, Learning, Memory e Session. A integridade usa fingerprint determinístico individual e é documentada como tamper-evident, não tamper-proof. Métricas técnicas/cognitivas, logs estruturados seguros, traces/spans por `correlation_id`, health snapshots e alert signals são derivados de fatos; alertas são armazenados, mas não enviados por e-mail, Slack, webhook ou serviço externo. Eventos internos de observabilidade não criam cadeia recursiva infinita: o `EventService` usa projectors e registros internos em vez de emitir/persistir `EVENT_STORED` sobre si mesmo.
 
-Observation Engine e Observability Layer têm responsabilidades distintas. Observation Engine mede resultados organizacionais declarados. Observability Layer mede o funcionamento técnico e cognitivo do E.C.O.S. O Sprint 17D não implementa OII, dashboards, tracing vendor, Prometheus/Grafana/Datadog/Sentry, filas distribuídas, autenticação ou RBAC.
+Observation Engine e Observability Layer têm responsabilidades distintas. Observation Engine mede resultados organizacionais declarados. Observability Layer mede o funcionamento técnico e cognitivo do E.C.O.S. O Sprint 17D não implementou OII, dashboards, tracing vendor, Prometheus/Grafana/Datadog/Sentry ou filas distribuídas; autenticação e RBAC locais foram adicionados no Sprint 17F.
+
+## Segurança, autenticação e multitenancy
+
+A camada de segurança local está em `backend/src/ecos/security/` e adiciona identidade, autenticação, autorização e isolamento organizacional sem provedor externo. O modo padrão usa `InMemorySecurityRepository`; PostgreSQL é ativado somente com `ECOS_SECURITY_REPOSITORY=postgres`, reutilizando `ECOS_DATABASE_URL` e as migrations Alembic.
+
+O modelo explícito inclui usuário, organização, vínculo usuário-organização, papéis, permissões, credencial de senha, sessão de autenticação, principal autenticado e `SecurityContext`. O contexto autenticado carrega `user_id`, `organization_id`, `roles`, `permissions`, `authentication_method`, `session_id`/`token_id`, `issued_at`, `expires_at` e `correlation_id`. Quando existe identidade autenticada, serviços escopados derivam `organization_id` do principal e não aceitam sobrescrita por body, query string ou payload do cliente.
+
+A autenticação é local e determinística. Senhas são armazenadas com Argon2id via `argon2-cffi`; tokens Bearer são JWT HS256 via `PyJWT`, assinados com `ECOS_AUTH_TOKEN_SECRET`, com `iss`, `aud`, `sub`, `org`, `sid`, `jti`, `iat` e `exp`. Tokens inválidos, expirados, revogados ou adulterados retornam 401. Produção não inicia com o segredo de desenvolvimento; configure um segredo forte em `ECOS_AUTH_TOKEN_SECRET`.
+
+RBAC usa papéis organizacionais: `viewer`, `operator`, `manager`, `executive`, `executive_board`, `auditor`, `admin` e `global_admin`. Permissões são explícitas para configurações organizacionais, sessões, memória, Knowledge Graph, eventos/auditoria, decisões, governança, execução, observação, aprendizado e administração. `admin` é administrador da própria organização; capacidades globais ficam separadas em `global_admin`.
+
+Eventos de segurança são persistidos como fatos append-only e projetados para auditoria/observability: autenticação bem-sucedida/falha, acesso negado, tentativa cross-tenant, criação/revogação de sessão, mudança de papel/permissão e execução privilegiada. A redação central remove headers de autorização, cookies, senhas, tokens, API keys, secrets, credenciais e chaves privadas de payloads, logs, auditoria e observability.
+
+O isolamento organizacional é aplicado por `organization_id` nos repositórios e nos wrappers escopados de Session e Memory. Knowledge Graph, Event Store, Audit Trail e Observability já consultam por organização obrigatória; traversals, buscas e queries não atravessam organizações. IDs conhecidos de outro tenant geram falha segura em vez de fallback silencioso.
+
+`/auth/login` autentica senha local e retorna Bearer token. `/security/me` exige Bearer token válido. Ausência ou falha de credencial retorna 401 com `WWW-Authenticate: Bearer`; permissão insuficiente ou acesso cross-tenant retorna 403. `/runtime/demo` continua funcionando sem credencial por meio de identidade demo explícita e controlada quando `ECOS_AUTH_DEMO_ENABLED=true`.
 
 ## Knowledge Graph
 

@@ -58,6 +58,7 @@ class PostgresSessionRepository(SessionRepository):
     async def _create(self, managed: ManagedSession) -> ManagedSession:
         record = SessionRecord(
             id=managed.session.id,
+            organization_id=managed.context.organization_id,
             managed_id=managed.id,
             session_data=managed.session.model_dump(mode="json"),
             context_data=managed.context.model_dump(mode="json"),

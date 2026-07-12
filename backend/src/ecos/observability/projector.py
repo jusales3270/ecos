@@ -55,6 +55,23 @@ _AUDITABLE: dict[EventType, tuple[str, AuditDecision]] = {
     EventType.LEARNING_REJECTED: ("learning_rejected", AuditDecision.DENIED),
     EventType.MEMORY_UPDATED: ("memory_update_confirmed", AuditDecision.RECORDED),
     EventType.MEMORY_IMPROVED: ("memory_improved", AuditDecision.RECORDED),
+    EventType.AUTHENTICATION_SUCCEEDED: (
+        "authentication_succeeded",
+        AuditDecision.GRANTED,
+    ),
+    EventType.AUTHENTICATION_FAILED: ("authentication_failed", AuditDecision.DENIED),
+    EventType.ACCESS_DENIED: ("access_denied", AuditDecision.DENIED),
+    EventType.CROSS_TENANT_ACCESS_ATTEMPTED: (
+        "cross_tenant_access_attempted",
+        AuditDecision.DENIED,
+    ),
+    EventType.AUTH_SESSION_CREATED: ("auth_session_created", AuditDecision.RECORDED),
+    EventType.AUTH_SESSION_REVOKED: ("auth_session_revoked", AuditDecision.RECORDED),
+    EventType.SECURITY_ROLE_CHANGED: ("security_role_changed", AuditDecision.RECORDED),
+    EventType.PRIVILEGED_EXECUTION_REQUESTED: (
+        "privileged_execution_requested",
+        AuditDecision.REQUESTED,
+    ),
 }
 
 _COUNTER_METRICS: dict[EventType, tuple[str, ObservabilityLevel]] = {
@@ -142,6 +159,27 @@ _COUNTER_METRICS: dict[EventType, tuple[str, ObservabilityLevel]] = {
     EventType.KNOWLEDGE_PROJECTION_FAILED: (
         "knowledge.projections.failed",
         ObservabilityLevel.ORGANIZATIONAL,
+    ),
+    EventType.AUTHENTICATION_SUCCEEDED: (
+        "security.authentication_succeeded",
+        ObservabilityLevel.PLATFORM,
+    ),
+    EventType.AUTHENTICATION_FAILED: (
+        "security.authentication_failed",
+        ObservabilityLevel.PLATFORM,
+    ),
+    EventType.ACCESS_DENIED: ("security.access_denied", ObservabilityLevel.PLATFORM),
+    EventType.CROSS_TENANT_ACCESS_ATTEMPTED: (
+        "security.cross_tenant_attempts",
+        ObservabilityLevel.PLATFORM,
+    ),
+    EventType.AUTH_SESSION_CREATED: (
+        "security.sessions_created",
+        ObservabilityLevel.PLATFORM,
+    ),
+    EventType.AUTH_SESSION_REVOKED: (
+        "security.sessions_revoked",
+        ObservabilityLevel.PLATFORM,
     ),
 }
 

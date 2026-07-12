@@ -1,8 +1,9 @@
 """Centralized settings for the ECOS backend."""
 
+from datetime import timedelta
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +44,33 @@ class Settings(BaseSettings):
         default="memory",
         description="Knowledge Graph repository implementation.",
     )
+    security_repository: Literal["memory", "postgres"] = Field(
+        default="memory",
+        description="Identity and authentication repository implementation.",
+    )
+    auth_token_secret: str = Field(
+        default="development-only-auth-secret-change-me-000000",
+        description="Local token signing secret supplied through secure config.",
+    )
+    auth_token_ttl_minutes: int = Field(
+        default=60,
+        ge=1,
+        description="Authentication token lifetime in minutes.",
+    )
+    auth_issuer: str = Field(
+        default="ecos.local",
+        min_length=1,
+        description="Issuer used for local ECOS auth tokens.",
+    )
+    auth_audience: str = Field(
+        default="ecos.api",
+        min_length=1,
+        description="Audience used for local ECOS auth tokens.",
+    )
+    auth_demo_enabled: bool = Field(
+        default=True,
+        description="Allow explicit demo identity for /runtime/demo.",
+    )
     ai_provider: Literal["fake", "openai"] = Field(
         default="fake",
         description="AI provider implementation used by the application.",
@@ -77,6 +105,22 @@ class Settings(BaseSettings):
         if value.startswith("postgresql://"):
             return value.replace("postgresql://", "postgresql+asyncpg://", 1)
         return value
+
+    @model_validator(mode="after")
+    def validate_security_defaults(self) -> "Settings":
+        """Reject insecure defaults in production-like environments."""
+        if self.environment.lower() in {"production", "prod"} and (
+            self.auth_token_secret == "development-only-auth-secret-change-me-000000"
+            or len(self.auth_token_secret) < 32
+        ):
+            msg = "ECOS_AUTH_TOKEN_SECRET must be securely configured in production"
+            raise ValueError(msg)
+        return self
+
+    @property
+    def auth_token_ttl(self) -> timedelta:
+        """Return token lifetime as timedelta."""
+        return timedelta(minutes=self.auth_token_ttl_minutes)
 
     redis_url: str = Field(
         default="redis://redis:6379/0",

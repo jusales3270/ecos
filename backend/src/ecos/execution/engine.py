@@ -129,6 +129,7 @@ class ExecutionEngine:
                 return self._waiting_result(state, waiting)
             self._validate_authorization(request.authorization, request)
             self._publish(state, EventType.EXECUTION_AUTHORIZATION_VALIDATED)
+            self._publish(state, EventType.PRIVILEGED_EXECUTION_REQUESTED)
             result = await self._run_plan(state)
             if result.status is ExecutionStatus.COMPLETED:
                 self._idempotency.complete(request.idempotency_key, result, self._now())
