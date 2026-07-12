@@ -4,6 +4,8 @@ from ecos.context.engine import ContextEngine
 from ecos.context.models import (
     ContextBuildRequest,
     ContextElement,
+    ContextGraph,
+    ContextKnowledgeReference,
     ContextMemoryReference,
     ContextObject,
     ContextPriority,
@@ -19,6 +21,8 @@ __all__ = [
     "ContextBuildRequest",
     "ContextElement",
     "ContextEngine",
+    "ContextGraph",
+    "ContextKnowledgeReference",
     "ContextMemoryReference",
     "ContextObject",
     "ContextPriority",

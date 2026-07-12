@@ -28,6 +28,17 @@ from ecos.governance import (
     StaticIdentityPort,
     demo_policy,
 )
+from ecos.knowledge import (
+    DeterministicSemanticSearchProvider,
+    GraphIntegrityService,
+    InMemoryKnowledgeGraphRepository,
+    KnowledgeContextExpander,
+    KnowledgeGraphRepository,
+    KnowledgeGraphService,
+    KnowledgeLimits,
+    KnowledgeProjector,
+)
+from ecos.knowledge.postgres import PostgresKnowledgeGraphRepository
 from ecos.learning import LearningService
 from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
 from ecos.observability import (
@@ -211,10 +222,45 @@ class Container:
             observability_repository=self.observability_repository,
             session_reconstructor=self.session_trace_reconstructor,
         )
+        self.knowledge_limits = KnowledgeLimits()
+        self.knowledge_repository: KnowledgeGraphRepository
+        if self.settings.knowledge_repository == "postgres":
+            self.knowledge_repository = PostgresKnowledgeGraphRepository(
+                self.settings.database_url
+            )
+        else:
+            self.knowledge_repository = InMemoryKnowledgeGraphRepository()
+        self.semantic_search_provider = DeterministicSemanticSearchProvider(
+            self.knowledge_repository,
+            clock=lambda: datetime.now(UTC),
+        )
+        self.knowledge_graph_service = KnowledgeGraphService(
+            self.knowledge_repository,
+            semantic_search_provider=self.semantic_search_provider,
+            event_service=self.event_service,
+            clock=lambda: datetime.now(UTC),
+            id_generator=uuid4,
+        )
+        self.knowledge_context_expander = KnowledgeContextExpander(
+            self.knowledge_graph_service,
+            self.knowledge_repository,
+        )
+        self.graph_integrity_service = GraphIntegrityService(
+            self.knowledge_repository,
+            knowledge_service=self.knowledge_graph_service,
+            clock=lambda: datetime.now(UTC),
+        )
+        self.knowledge_projector = KnowledgeProjector(
+            self.knowledge_graph_service,
+            clock=lambda: datetime.now(UTC),
+        )
+        self.event_service.register_projector(self.knowledge_projector)
         if self.settings.memory_repository == "postgres":
             self.context_provider = ContextEngine(
                 self.memory_repository,
                 event_service=self.event_service,
+                knowledge_graph_service=self.knowledge_graph_service,
+                context_expander=self.knowledge_context_expander,
             )
         else:
             self.context_provider = FakeContextProvider(organization.id, objective)

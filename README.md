@@ -7,7 +7,7 @@ O objetivo do ECOS é servir como uma base estruturada para sistemas cognitivos 
 ## Stack inicial
 
 - **Backend:** Python + FastAPI
-- **Banco:** PostgreSQL + pgvector
+- **Banco:** PostgreSQL opcional
 - **Cache:** Redis
 - **Frontend:** Next.js
 - **Infra local:** Docker Compose
@@ -62,7 +62,23 @@ Consultas de eventos são escopadas por `organization_id` e podem filtrar por Se
 
 Audit trail persistente é projetado de eventos auditáveis de Governance, Execution, Observation, Learning, Memory e Session. A integridade usa fingerprint determinístico individual e é documentada como tamper-evident, não tamper-proof. Métricas técnicas/cognitivas, logs estruturados seguros, traces/spans por `correlation_id`, health snapshots e alert signals são derivados de fatos; alertas são armazenados, mas não enviados por e-mail, Slack, webhook ou serviço externo. Eventos internos de observabilidade não criam cadeia recursiva infinita: o `EventService` usa projectors e registros internos em vez de emitir/persistir `EVENT_STORED` sobre si mesmo.
 
-Observation Engine e Observability Layer têm responsabilidades distintas. Observation Engine mede resultados organizacionais declarados. Observability Layer mede o funcionamento técnico e cognitivo do E.C.O.S. O Sprint 17D não implementa OII, dashboards, tracing vendor, Prometheus/Grafana/Datadog/Sentry, filas distribuídas, Knowledge Graph, autenticação ou RBAC.
+Observation Engine e Observability Layer têm responsabilidades distintas. Observation Engine mede resultados organizacionais declarados. Observability Layer mede o funcionamento técnico e cognitivo do E.C.O.S. O Sprint 17D não implementa OII, dashboards, tracing vendor, Prometheus/Grafana/Datadog/Sentry, filas distribuídas, autenticação ou RBAC.
+
+## Knowledge Graph
+
+O Knowledge Graph real está em `backend/src/ecos/knowledge/` e representa significado organizacional estruturado: entidades, relacionamentos direcionais, versões, proveniência e referências seguras. Ele não armazena documentos brutos, binários, políticas integrais, recommendations integrais, reasoning integral ou cadeia privada de pensamento. Também não raciocina, não recomenda, não decide, não aprova, não executa ação e não altera Memory, LearningResult, Session ou eventos históricos.
+
+Entidades e relacionamentos são imutáveis e versionados. Correções, arquivamentos, substituições e merges geram novas versões; histórico não é apagado e não há hard delete. As consultas suportam versão atual, versão específica, histórico e `as_of` timezone-aware. Identidade e idempotência usam fingerprints SHA-256 derivados de campos seguros (`organization_id`, tipo, nome normalizado, namespace, identificadores externos confiáveis e atributos `identity_*`), nunca `hash()` do Python. Entidades parecidas não são mescladas automaticamente: merge exige operação explícita e auditável. Relação lexical não vira identidade, e associação não vira causalidade.
+
+Tipos canônicos incluem organização, unidade, departamento, time, pessoa, papel, projeto, objetivo, decisão, reunião, política, procedimento, risco, oportunidade, cliente, fornecedor, produto, serviço, referência documental, memória, sessão, especialista, recomendação, execução, observação, aprendizagem, métrica, sistema, recurso, artefato e evento externo. Relações direcionais incluem `owns`, `belongs_to`, `created_by`, `depends_on`, `relates_to`, `supports`, `contradicts`, `affects`, `generated`, `approved_by`, `executed_by`, `learned_from`, `references`, `replaces`, `extends`, `governed_by`, `resulted_in`, `observed_by`, `measured_by`, `associated_with`, `occurred_after`, `correlated_with`, `part_of`, `assigned_to`, `uses`, `produces`, `mitigates`, `exposes` e `requires`.
+
+Travessia é determinística e limitada: vizinhos diretos, caminhos breadth-first, cadeia de dependência, cadeia de impacto e subgrafo respeitam `organization_id`, profundidade, número máximo de nós, confiança mínima e filtros de tipo/status. Ciclos são permitidos em relações como `relates_to`; `depends_on` e `replaces` são acíclicas e geram erro/violação de integridade quando formam ciclo.
+
+A recuperação semântica deste sprint é estruturada e lexical, sem OpenAI, `AIProvider`, LLM, embeddings, pgvector, Neo4j, banco vetorial, machine learning, busca externa ou chamadas externas. O ranking combina similaridade lexical/estruturada `0.35`, proximidade no grafo `0.20`, relevância por relacionamento `0.10`, importância `0.10`, recência `0.10`, confiança `0.10` e relevância organizacional `0.05`. Os pesos somam 1 e o desempate é determinístico por score, importância e `entity_id`.
+
+O `KnowledgeContextExpander` fornece candidatos, caminhos e referências para o Context Engine, respeitando limites de profundidade, entidades, relacionamentos, orçamento e confiança. O Context Engine continua responsável pela seleção final do Unified Context e funciona com grafo vazio, registrando lacuna segura em vez de inventar conhecimento. Memory e Learning alimentam o grafo por eventos validados e replay-safe: Memory rejeitada ou Learning rejeitada não entram como conhecimento ativo.
+
+O repositório padrão é `InMemoryKnowledgeGraphRepository`, sem banco, arquivos, estado global ou chamadas externas. PostgreSQL é opcional com `ECOS_KNOWLEDGE_REPOSITORY=postgres`, reutiliza `ECOS_DATABASE_URL`, SQLAlchemy async e Alembic existentes, sem banco separado e sem fallback silencioso. A migration `20260711_05_create_knowledge_graph_tables.py` cria `knowledge_entity_versions` e `knowledge_relationship_versions`. A validação de integridade reporta relacionamentos quebrados, duplicidade ativa, conflitos de fingerprint, ciclos inválidos e problemas de versão sem modificar o grafo.
 
 ## Cognitive Session Manager
 
@@ -141,11 +157,11 @@ O Context Engine real está em `backend/src/ecos/context/` e monta um Unified Co
 
 A seleção é feita exclusivamente pelo Container: com `ECOS_MEMORY_REPOSITORY=fake`, o runtime demonstrativo preserva `FakeContextProvider` e mantém o comportamento público de `/runtime/demo`; com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta `ContextEngine` com o `MemoryRepository` configurado. A recuperação de memória é sempre escopada por `organization_id`, mantém referências aos objetos originais e rejeita qualquer memória retornada de outra organização.
 
-Relevância, confiança e completude são calculadas de forma determinística e testável. A relevância considera correspondência com objetivo, entidades, políticas/restrições, tipo/importância da memória, confiança e recência, sem embeddings, pgvector, busca web, Knowledge Graph ou chamadas externas. Lacunas de contexto permanecem explícitas em `missing_context`; elas reduzem `confidence` e `completeness` em vez de serem ocultadas.
+Relevância, confiança e completude são calculadas de forma determinística e testável. A relevância considera correspondência com objetivo, entidades, políticas/restrições, tipo/importância da memória, confiança e recência, sem embeddings, busca web ou chamadas externas. Quando o Container injeta o Knowledge Graph real, o Context Engine consome candidatos e `ContextGraph` seguros por porta, sem acessar repository concreto ou SQLAlchemy e sem transferir a decisão final de contexto para o grafo. Lacunas de contexto permanecem explícitas em `missing_context`; elas reduzem `confidence` e `completeness` em vez de serem ocultadas.
 
 ## Memory Engine
 
-O Memory Engine preserva o contrato `MemoryRepository` e oferece persistência em PostgreSQL via SQLAlchemy 2 e asyncpg. O fake continua como padrão; defina `ECOS_MEMORY_REPOSITORY=postgres` para persistência permanente e para ativar o Context Engine real no Container. Memórias podem carregar `organization_id`; o Context Engine exige esse escopo para recuperar contexto sem vazamento entre organizações. Este estágio não implementa pgvector, busca vetorial, embeddings ou LLM.
+O Memory Engine preserva o contrato `MemoryRepository` e oferece persistência em PostgreSQL via SQLAlchemy 2 e asyncpg. O fake continua como padrão; defina `ECOS_MEMORY_REPOSITORY=postgres` para persistência permanente e para ativar o Context Engine real no Container. Memórias podem carregar `organization_id`; o Context Engine exige esse escopo para recuperar contexto sem vazamento entre organizações. Este estágio não implementa busca vetorial, embeddings ou LLM.
 
 ## Observation Engine
 
@@ -157,7 +173,7 @@ Os providers padrão são determinísticos e em memória. A Observability Layer 
 
 O Learning Engine em `backend/src/ecos/learning/` é a fronteira obrigatória para criação ou atualização permanente de memória organizacional. Ele transforma `ObservationResult` validado em candidatos estruturados, calibra confiança por proposta versionada e só entrega conhecimento validado ao Memory Engine. Uma ocorrência não equivale a padrão; padrões exigem recorrência no histórico injetado. Aprendizagem estratégica, crítica ou sem aceitação explícita suficiente exige revisão humana.
 
-Learning não explica causa sem evidência declarada, não sobrescreve confiança histórica, não apaga memória, não reescreve fatos e não reduz governança. Memória é evolutiva e não destrutiva: atualizações preservam origem, evidência, versão e proveniência. Nenhum LLM, embeddings, migration, banco novo ou chamada externa foi adicionado.
+Learning não explica causa sem evidência declarada, não sobrescreve confiança histórica, não apaga memória, não reescreve fatos e não reduz governança. Memória é evolutiva e não destrutiva: atualizações preservam origem, evidência, versão e proveniência. Nenhum LLM, embeddings, banco novo ou chamada externa foi adicionado ao Learning Engine.
 
 ## Backend
 

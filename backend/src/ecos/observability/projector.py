@@ -111,6 +111,38 @@ _COUNTER_METRICS: dict[EventType, tuple[str, ObservabilityLevel]] = {
         ObservabilityLevel.ORGANIZATIONAL,
     ),
     EventType.MEMORY_UPDATED: ("memory.updates", ObservabilityLevel.ORGANIZATIONAL),
+    EventType.KNOWLEDGE_ENTITY_CREATED: (
+        "knowledge.entities.created",
+        ObservabilityLevel.ORGANIZATIONAL,
+    ),
+    EventType.KNOWLEDGE_ENTITY_VERSIONED: (
+        "knowledge.entities.versioned",
+        ObservabilityLevel.ORGANIZATIONAL,
+    ),
+    EventType.KNOWLEDGE_RELATIONSHIP_CREATED: (
+        "knowledge.relationships.created",
+        ObservabilityLevel.ORGANIZATIONAL,
+    ),
+    EventType.KNOWLEDGE_RELATIONSHIP_VERSIONED: (
+        "knowledge.relationships.versioned",
+        ObservabilityLevel.ORGANIZATIONAL,
+    ),
+    EventType.SEMANTIC_SEARCH_COMPLETED: (
+        "knowledge.searches",
+        ObservabilityLevel.ORGANIZATIONAL,
+    ),
+    EventType.CONTEXT_EXPANDED: (
+        "knowledge.context_expansions",
+        ObservabilityLevel.ORGANIZATIONAL,
+    ),
+    EventType.GRAPH_INTEGRITY_FAILED: (
+        "knowledge.integrity.failures",
+        ObservabilityLevel.ORGANIZATIONAL,
+    ),
+    EventType.KNOWLEDGE_PROJECTION_FAILED: (
+        "knowledge.projections.failed",
+        ObservabilityLevel.ORGANIZATIONAL,
+    ),
 }
 
 _START_EVENTS: dict[EventType, str] = {
@@ -226,6 +258,9 @@ class MetricProjector:
             ("quality_score", "observation.quality_score"),
             ("confidence", "recommendation.confidence"),
             ("context_completeness", "context.completeness"),
+            ("duration_seconds", "knowledge.search.duration_seconds"),
+            ("entity_count", "knowledge.context.entity_count"),
+            ("relationship_count", "knowledge.context.relationship_count"),
             ("cost_units", "relative.cost_units"),
         ):
             value = event.payload.get(payload_key)

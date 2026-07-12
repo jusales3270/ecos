@@ -169,6 +169,47 @@ class ContextMemoryReference(ContextModel):
         return self
 
 
+class ContextKnowledgeReference(ContextModel):
+    """Safe reference to a selected Knowledge Graph entity."""
+
+    entity_id: str = Field(min_length=1, max_length=200)
+    organization_id: UUID = Field(description="Organization that owns the entity.")
+    entity_type: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=300)
+    confidence: float = Field(ge=0.0, le=1.0)
+    importance: float = Field(ge=0.0, le=1.0)
+    evidence_references: list[str] = Field(default_factory=list)
+
+
+class ContextGraph(ContextModel):
+    """Safe graph context references assembled for Context Engine use."""
+
+    organization_id: UUID
+    session_id: UUID
+    seed_entities: list[str] = Field(default_factory=list)
+    selected_entities: list[str] = Field(default_factory=list)
+    selected_relationships: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
+    expansion_depth: int = Field(default=0, ge=0)
+    entity_count: int = Field(default=0, ge=0)
+    relationship_count: int = Field(default=0, ge=0)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    completeness_signal: str = Field(default="empty", max_length=64)
+    truncated: bool = False
+    reason_codes: list[str] = Field(default_factory=list)
+    safe_metadata: dict[str, ContextMetadataValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> Self:
+        if self.entity_count != len(self.selected_entities):
+            msg = "entity_count must match selected_entities"
+            raise ValueError(msg)
+        if self.relationship_count != len(self.selected_relationships):
+            msg = "relationship_count must match selected_relationships"
+            raise ValueError(msg)
+        return self
+
+
 class MissingContextItem(ContextModel):
     """Explicit report of unavailable or insufficient context."""
 
@@ -270,6 +311,8 @@ class ContextObject(ContextModel):
     resources: list[str] = Field(default_factory=list)
     relevant_entities: list[str] = Field(default_factory=list)
     memory_references: list[ContextMemoryReference] = Field(default_factory=list)
+    knowledge_references: list[ContextKnowledgeReference] = Field(default_factory=list)
+    context_graph: ContextGraph | None = None
     evidence: list[str] = Field(default_factory=list)
     previous_decisions: list[str] = Field(default_factory=list)
     missing_context: list[MissingContextItem] = Field(default_factory=list)
