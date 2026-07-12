@@ -1,4 +1,4 @@
-.PHONY: backend-sync backend-lint backend-format-check backend-test frontend-install frontend-lint frontend-typecheck frontend-test frontend-build test docker-config docker-build up down logs health migrations
+.PHONY: backend-sync backend-lint backend-format-check backend-test backend-audit frontend-install frontend-lint frontend-typecheck frontend-test frontend-build frontend-audit secret-scan test docker-config docker-build up down logs health migrations
 
 backend-sync:
 	cd backend && uv sync
@@ -11,6 +11,9 @@ backend-format-check:
 
 backend-test:
 	cd backend && uv run pytest
+
+backend-audit:
+	cd backend && uvx pip-audit --strict --progress-spinner off
 
 frontend-install:
 	cd frontend && npm ci
@@ -26,6 +29,12 @@ frontend-test:
 
 frontend-build:
 	cd frontend && npm run build
+
+frontend-audit:
+	cd frontend && npm audit --audit-level=critical
+
+secret-scan:
+	! git grep -n -E -e '-----BEGIN ((RSA|DSA|EC|OPENSSH) )?PRIVATE KEY-----|AKIA[0-9A-Z]{16}|xox[baprs]-|ghp_[A-Za-z0-9_]{36,}' -- ':!frontend/package-lock.json'
 
 test: backend-lint backend-format-check backend-test frontend-lint frontend-typecheck frontend-test frontend-build
 

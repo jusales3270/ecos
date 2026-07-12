@@ -46,6 +46,9 @@ jobs:
       - name: Backend tests
         working-directory: backend
         run: uv run pytest
+      - name: Python dependency audit
+        working-directory: backend
+        run: uvx pip-audit --strict --progress-spinner off
       - name: Migration upgrade
         working-directory: backend
         env:
@@ -64,6 +67,9 @@ jobs:
       - name: Frontend dependencies
         working-directory: frontend
         run: npm ci
+      - name: Frontend dependency audit
+        working-directory: frontend
+        run: npm audit --audit-level=critical
       - name: Frontend lint
         working-directory: frontend
         run: npm run lint
@@ -89,3 +95,22 @@ jobs:
         run: docker compose config
       - name: Docker image build
         run: docker compose build
+      - name: Verify Docker runtime user
+        run: docker compose run --rm --no-deps app python -c "import os; raise SystemExit(0 if os.getuid() != 0 else 1)"
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: Secret scan
+        run: |
+          ! git grep -n -E -e '-----BEGIN ((RSA|DSA|EC|OPENSSH) )?PRIVATE KEY-----|AKIA[0-9A-Z]{16}|xox[baprs]-|ghp_[A-Za-z0-9_]{36,}' -- ':!frontend/package-lock.json'
+          ! git ls-files | grep -E '(^|/)\.env$'
+      - name: Backup smoke
+        env:
+          ECOS_DATABASE_URL: postgresql://ecos:ecos@localhost:5432/ecos
+          ECOS_BACKUP_DIR: /tmp/ecos-backups
+        run: scripts/backup-postgres.sh
+      - name: Git diff whitespace check
+        run: git diff --check

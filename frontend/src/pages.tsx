@@ -9,7 +9,9 @@ import type {
   Execution,
   KnowledgeResult,
   OperationalSession,
-  Overview
+  OutboxMessage,
+  Overview,
+  ReadinessInfo
 } from "./types";
 
 function useLoad<T>(loader: () => Promise<T>, deps: unknown[] = []) {
@@ -344,6 +346,8 @@ export function AdminPage() {
     () => api.members(),
     []
   );
+  const readiness = useLoad<ReadinessInfo>(() => api.readiness(), []);
+  const outbox = useLoad<OutboxMessage[]>(() => api.outbox(), []);
   const [reconcileResult, setReconcileResult] = useState<string | null>(null);
   async function reconcile() {
     const result = await api.reconcile();
@@ -355,6 +359,32 @@ export function AdminPage() {
       {forbidden ? <div className="error">Acesso negado.</div> : null}
       {loading ? <p>Carregando...</p> : null}
       {error && !forbidden ? <div className="error">{error}</div> : null}
+      <div className="grid two">
+        <Panel title="Readiness">
+          {readiness.error ? <div className="error">{readiness.error}</div> : null}
+          {readiness.data ? (
+            <>
+              <Status value={readiness.data.ready ? "healthy" : "unhealthy"} />
+              <p>Schema: <code>{readiness.data.schema_revision ?? "indisponível"}</code></p>
+              {Object.entries(readiness.data.components).map(([name, component]) => (
+                <div className="row" key={name}>
+                  <span>{name}</span>
+                  <Status value={String(component.status)} />
+                </div>
+              ))}
+            </>
+          ) : null}
+        </Panel>
+        <Panel title="Outbox">
+          {outbox.error ? <div className="error">{outbox.error}</div> : null}
+          {(outbox.data ?? []).slice(0, 8).map((item) => (
+            <div className="row compact" key={item.message_id}>
+              <span>{item.event_type}</span>
+              <Status value={item.status} />
+            </div>
+          ))}
+        </Panel>
+      </div>
       {(data ?? []).map((item, index) => (
         <Panel key={index} title={(item.user as { email?: string })?.email ?? "Membro"}>
           <pre>{JSON.stringify(item, null, 2)}</pre>

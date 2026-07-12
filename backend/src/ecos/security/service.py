@@ -56,6 +56,9 @@ class SecurityService:
         issuer: str,
         audience: str,
         token_ttl: timedelta,
+        token_key_ring: dict[str, str] | None = None,
+        active_key_id: str = "local-dev",
+        clock_skew_seconds: int = 30,
         event_service: EventService | None = None,
         clock: Clock | None = None,
         password_hasher: PasswordHasher | None = None,
@@ -64,9 +67,19 @@ class SecurityService:
             raise ValueError("token_secret must contain at least 32 characters")
         self._repository = repository
         self._token_secret = token_secret
+        self._active_key_id = active_key_id
+        self._token_key_ring = token_key_ring or {active_key_id: token_secret}
+        if active_key_id not in self._token_key_ring:
+            raise ValueError("active_key_id must exist in token_key_ring")
+        for key_id, secret in self._token_key_ring.items():
+            if not key_id or len(secret) < 32:
+                raise ValueError(
+                    "all JWT key ring secrets must contain at least 32 characters"
+                )
         self._issuer = issuer
         self._audience = audience
         self._token_ttl = token_ttl
+        self._clock_skew_seconds = clock_skew_seconds
         self._event_service = event_service
         self._clock = clock or utc_now
         self._password_hasher = password_hasher or PasswordHasher()
@@ -210,12 +223,17 @@ class SecurityService:
     ) -> AuthenticatedPrincipal:
         """Decode, verify and resolve a bearer token."""
         try:
+            header = jwt.get_unverified_header(token)
+            key_id = str(header.get("kid", ""))
+            if key_id not in self._token_key_ring:
+                raise AuthenticationError("unknown token key")
             payload = jwt.decode(
                 token,
-                self._token_secret,
+                self._token_key_ring[key_id],
                 algorithms=["HS256"],
                 issuer=self._issuer,
                 audience=self._audience,
+                leeway=self._clock_skew_seconds,
                 options={"require": ["exp", "iat", "iss", "aud", "sub", "jti"]},
             )
             token_id = UUID(str(payload["jti"]))
@@ -394,7 +412,12 @@ class SecurityService:
             "exp": int(principal.expires_at.timestamp()),
             "amr": principal.authentication_method.value,
         }
-        return jwt.encode(payload, self._token_secret, algorithm="HS256")
+        return jwt.encode(
+            payload,
+            self._token_key_ring[self._active_key_id],
+            algorithm="HS256",
+            headers={"kid": self._active_key_id},
+        )
 
     def _publish_security_event(
         self,

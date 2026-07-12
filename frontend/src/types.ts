@@ -147,3 +147,29 @@ export type KnowledgeResult = {
   version: number;
   source: string[];
 };
+
+export type VersionInfo = {
+  name: string;
+  service: string;
+  version: string;
+  environment: string;
+  commit_sha: string;
+  build_date: string;
+  schema_revision: string;
+};
+
+export type ReadinessInfo = {
+  ready: boolean;
+  schema_revision: string | null;
+  components: Record<string, { status: string; [key: string]: unknown }>;
+};
+
+export type OutboxMessage = {
+  message_id: string;
+  event_type: string;
+  status: string;
+  attempts: number;
+  created_at: string;
+  delivered_at: string | null;
+  last_error: string | null;
+};

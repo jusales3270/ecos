@@ -30,13 +30,12 @@ def test_settings_exposes_development_defaults_without_real_secrets() -> None:
 
     assert settings.name == "ECOS"
     assert settings.service_name == "ecos-backend"
-    assert settings.version == "0.1.0"
+    assert settings.version == "0.1.0-rc.1"
     assert settings.environment == "development"
     assert settings.log_level == "INFO"
     assert settings.database_url.startswith("postgresql+asyncpg://ecos:ecos@")
     assert settings.session_repository == "fake"
     assert settings.memory_repository == "fake"
-    assert settings.redis_url.startswith("redis://")
     assert settings.pgadmin_email == "admin@example.local"
     assert settings.pgadmin_password == "change-me-development-only"
 

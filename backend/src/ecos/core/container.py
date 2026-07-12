@@ -6,9 +6,12 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import text
+
 from ecos.context import ContextEngine, ContextService
 from ecos.core.exceptions import ConfigurationError
 from ecos.core.settings import Settings
+from ecos.database import create_database_engine
 from ecos.debate import AIDebateEngine, DebateService
 from ecos.decision import AIDecisionSupportEngine, DecisionService
 from ecos.domain import Objective, Organization
@@ -78,6 +81,11 @@ from ecos.orchestrator import (
     Orchestrator,
     OrchestratorService,
 )
+from ecos.outbox import (
+    InMemoryOutboxRepository,
+    OutboxService,
+    PostgresOutboxRepository,
+)
 from ecos.planner import CognitivePlanner, PlannerService
 from ecos.providers import (
     AIProvider,
@@ -124,6 +132,10 @@ from ecos.security import (
     SecurityService,
     TenantScopedMemoryService,
     TenantScopedSessionService,
+)
+from ecos.security.controls import (
+    InMemorySecurityControlRepository,
+    PostgresSecurityControlRepository,
 )
 from ecos.security.postgres import PostgresSecurityRepository
 from ecos.session import PostgresSessionRepository, SessionRepository, SessionService
@@ -283,6 +295,9 @@ class Container:
             issuer=self.settings.auth_issuer,
             audience=self.settings.auth_audience,
             token_ttl=self.settings.auth_token_ttl,
+            token_key_ring=_jwt_key_ring(self.settings),
+            active_key_id=self.settings.auth_active_key_id,
+            clock_skew_seconds=self.settings.auth_clock_skew_seconds,
             event_service=self.event_service,
             clock=lambda: datetime.now(UTC),
         )
@@ -478,6 +493,24 @@ class Container:
             ai_service=self.ai_service,
         )
         self.runtime_engine = RuntimeEngine(self.runtime_pipeline)
+        if self.settings.security_repository == "postgres":
+            self.security_controls = PostgresSecurityControlRepository(
+                self.settings.database_url
+            )
+        else:
+            self.security_controls = InMemorySecurityControlRepository()
+        if self.settings.operational_repository == "postgres":
+            self.outbox_repository = PostgresOutboxRepository(
+                self.settings.database_url
+            )
+        else:
+            self.outbox_repository = InMemoryOutboxRepository()
+        self.outbox_service = OutboxService(
+            self.outbox_repository,
+            self.event_service,
+            max_attempts=self.settings.outbox_max_attempts,
+            batch_size=self.settings.outbox_batch_size,
+        )
         self.operational_service = OperationalService(
             security_service=self.security_service,
             security_repository=self.security_repository,
@@ -486,6 +519,8 @@ class Container:
             repository=self._operational_repository(),
             demo_seed_enabled=self.settings.demo_seed_enabled,
             environment=self.settings.environment,
+            outbox_service=self.outbox_service,
+            outbox_enabled=self.settings.outbox_enabled,
         )
 
     def _operational_repository(self) -> OperationalRepository:
@@ -504,3 +539,116 @@ class Container:
             },
             "runtime": isinstance(self.runtime_engine, RuntimeEngine),
         }
+
+    def readiness(self) -> dict[str, Any]:
+        """Return short readiness component status without exposing credentials."""
+        components: dict[str, dict[str, Any]] = {
+            "container": {"status": "healthy"},
+            "runtime": {
+                "status": "healthy"
+                if isinstance(self.runtime_engine, RuntimeEngine)
+                else "unhealthy"
+            },
+            "configuration": {"status": self._configuration_status()},
+            "outbox": {"status": "healthy", "counts": self.outbox_repository.counts()},
+        }
+        schema_revision: str | None = None
+        if _uses_postgres(self.settings):
+            database = _run_async(self._database_readiness())
+            components.update(database["components"])
+            schema_revision = database.get("schema_revision")
+        ready = all(item["status"] == "healthy" for item in components.values())
+        return {
+            "ready": ready,
+            "schema_revision": schema_revision,
+            "components": components,
+        }
+
+    def _configuration_status(self) -> str:
+        if self.settings.production and self.settings.demo_seed_enabled:
+            return "unhealthy"
+        if self.settings.production and len(self.settings.auth_token_secret) < 32:
+            return "unhealthy"
+        return "healthy"
+
+    async def _database_readiness(self) -> dict[str, Any]:
+        engine = create_database_engine(self.settings.database_url, self.settings)
+        required_tables = {
+            "alembic_version",
+            "security_users",
+            "security_auth_sessions",
+            "operational_sessions",
+            "operational_idempotency_keys",
+            "event_records",
+            "transactional_outbox",
+        }
+        components: dict[str, dict[str, Any]] = {}
+        schema_revision: str | None = None
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text("select 1"))
+                schema_revision = await connection.scalar(
+                    text("select version_num from alembic_version limit 1")
+                )
+                rows = (
+                    await connection.execute(
+                        text(
+                            "select table_name from information_schema.tables "
+                            "where table_schema='public'"
+                        )
+                    )
+                ).scalars()
+                present = set(rows)
+        except Exception:
+            components["database"] = {"status": "unhealthy"}
+            await engine.dispose()
+            return {"schema_revision": schema_revision, "components": components}
+        finally:
+            await engine.dispose()
+        missing = sorted(required_tables - present)
+        components["database"] = {"status": "healthy"}
+        components["schema"] = {
+            "status": "healthy" if not missing and schema_revision else "unhealthy",
+            "revision": schema_revision,
+            "missing_tables": missing,
+        }
+        return {"schema_revision": schema_revision, "components": components}
+
+
+def _jwt_key_ring(settings: Settings) -> dict[str, str]:
+    if not settings.auth_token_key_ring:
+        return {settings.auth_active_key_id: settings.auth_token_secret}
+    ring: dict[str, str] = {}
+    for item in settings.auth_token_key_ring.split(","):
+        key_id, separator, secret = item.partition(":")
+        if not separator:
+            continue
+        ring[key_id.strip()] = secret.strip()
+    if settings.auth_active_key_id not in ring:
+        ring[settings.auth_active_key_id] = settings.auth_token_secret
+    return ring
+
+
+def _uses_postgres(settings: Settings) -> bool:
+    return any(
+        value == "postgres"
+        for value in (
+            settings.session_repository,
+            settings.memory_repository,
+            settings.observability_repository,
+            settings.knowledge_repository,
+            settings.security_repository,
+            settings.operational_repository,
+        )
+    )
+
+
+def _run_async[ResultT](coroutine) -> ResultT:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coroutine).result()

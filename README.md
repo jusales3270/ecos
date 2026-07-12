@@ -8,7 +8,6 @@ O objetivo do ECOS é servir como uma base estruturada para sistemas cognitivos 
 
 - **Backend:** Python + FastAPI
 - **Banco:** PostgreSQL opcional
-- **Cache:** Redis
 - **Frontend:** React + TypeScript + Vite + React Router
 - **Infra local:** Docker Compose com PostgreSQL, migrations e aplicação
 
@@ -24,7 +23,7 @@ tests/     Testes automatizados e recursos de validação.
 
 ## Estado atual
 
-Este repositório contém o baseline inicial de organização e um backend FastAPI mínimo com endpoint de health check.
+Este repositório está em Release Candidate técnico `0.1.0-rc.1`, com backend FastAPI, frontend operacional, PostgreSQL opcional/obrigatório em produção, segurança local, API `/api/v1`, observability/event store, Knowledge Graph, persistência operacional e validações de release.
 
 
 ## Domínio
@@ -283,8 +282,10 @@ A imagem final integra frontend compilado e API, roda com usuário não-root e n
 Scripts operacionais simples ficam em `scripts/`:
 
 - `backup-postgres.sh`: executa `pg_dump --format=custom` em `ECOS_DATABASE_URL`,
-  valida o dump com `pg_restore --list` e grava em `ECOS_BACKUP_DIR` ou `./backups`.
-- `restore-postgres.sh`: restaura `ECOS_RESTORE_FILE` com `pg_restore --clean --if-exists`.
+  valida o dump com `pg_restore --list`, gera checksum/metadados e grava em
+  `ECOS_BACKUP_DIR` ou `./backups`.
+- `restore-postgres.sh`: valida dump/checksum e exige banco vazio e
+  `ECOS_RESTORE_CONFIRM=RESTORE_ECOS`.
 - `cleanup-operational-retention.sh`: remove chaves de idempotência expiradas.
 
 Disaster recovery local: parar a aplicação, restaurar backup em banco limpo, aplicar
@@ -361,3 +362,24 @@ cd backend
 uv run ruff check .
 uv run ruff format --check .
 ```
+
+## Sprint 18C — Release Candidate
+
+O Sprint 18C adiciona os controles finais de confiabilidade e segurança:
+
+- transactional outbox PostgreSQL em `transactional_outbox`, com processamento idempotente, backoff, recuperação de `processing` preso e endpoints admin `/api/v1/admin/outbox` e `/api/v1/admin/outbox/process`;
+- materialização operacional normalizada para timeline, decisões de aprovação e tentativas de execução;
+- throttling persistente de login por identidade normalizada e origem;
+- rate limiting determinístico para login, API geral, Knowledge Graph, auditoria/admin e endpoints mutáveis, sem Redis;
+- JWT key ring com `kid`, issuer/audience obrigatórios, clock skew limitado e rejeição de `kid` desconhecido;
+- `/health/ready` com conectividade PostgreSQL, schema revision, tabelas essenciais, outbox e configuração obrigatória;
+- `/health/version` com versão, ambiente, commit/build quando configurados e schema revision;
+- backup/restore PostgreSQL com formato custom, checksum, metadados e confirmação explícita;
+- CI com lint/test/build backend/frontend, PostgreSQL migrations, auditorias de dependências, SBOM, secret scan e Docker checks.
+
+Documentação operacional:
+
+- `docs/production-readiness.md`
+- `docs/security-operations.md`
+- `docs/disaster-recovery.md`
+- `docs/release-process.md`

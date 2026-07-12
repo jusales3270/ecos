@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Any
 from uuid import UUID
 
+from ecos.events import Event
 from ecos.operational.exceptions import IdempotencyConflictError
 from ecos.operational.models import OperationalSessionView
 
@@ -47,12 +48,26 @@ class IdempotencyRecord:
 class OperationalRepository(ABC):
     """Persistence port for the operational API aggregate."""
 
+    supports_transactional_outbox: bool = False
+
     @abstractmethod
     def save_session(
         self, session: OperationalSessionView, *, expected_version: int | None = None
     ) -> tuple[OperationalSessionView, int]:
         """Insert or update a session using optimistic versioning."""
         raise NotImplementedError
+
+    def save_session_with_events(
+        self,
+        session: OperationalSessionView,
+        *,
+        expected_version: int | None,
+        events: tuple[Event, ...],
+        actor_id: UUID | None,
+    ) -> tuple[OperationalSessionView, int]:
+        """Persist state and append outbox messages atomically when supported."""
+        del events, actor_id
+        return self.save_session(session, expected_version=expected_version)
 
     @abstractmethod
     def get_session(

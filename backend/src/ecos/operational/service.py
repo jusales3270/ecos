@@ -66,12 +66,16 @@ class OperationalService:
         repository: OperationalRepository,
         demo_seed_enabled: bool,
         environment: str,
+        outbox_service: object | None = None,
+        outbox_enabled: bool = False,
     ) -> None:
         self._security_service = security_service
         self._security_repository = security_repository
         self._event_service = event_service
         self._knowledge_graph_service = knowledge_graph_service
         self._repository = repository
+        self._outbox_service = outbox_service
+        self._outbox_enabled = outbox_enabled
         self._metrics = OperationalMetrics()
         self._idempotency_ttl = timedelta(hours=24)
         if demo_seed_enabled and environment.lower() not in {"production", "prod"}:
@@ -274,11 +278,15 @@ class OperationalService:
             correlation_id=correlation_id,
         )
         session = self._append(session, "session.created", "Session created", principal)
-        self._repository.save_session(session, expected_version=0)
+        self._save_with_events(
+            session,
+            expected_version=0,
+            event_types=(EventType.SESSION_CREATED,),
+            principal=principal,
+        )
         self._metrics = self._metrics.model_copy(
             update={"sessions_started": self._metrics.sessions_started + 1}
         )
-        self._publish(EventType.SESSION_CREATED, session, principal)
         self._store_idempotency(
             principal,
             "session.create",
@@ -420,9 +428,15 @@ class OperationalService:
             "Independent approval requested",
             principal,
         )
-        self._repository.save_session(updated, expected_version=version)
-        self._publish(EventType.RECOMMENDATION_CREATED, updated, principal)
-        self._publish(EventType.APPROVAL_REQUESTED, updated, principal)
+        self._save_with_events(
+            updated,
+            expected_version=version,
+            event_types=(
+                EventType.RECOMMENDATION_CREATED,
+                EventType.APPROVAL_REQUESTED,
+            ),
+            principal=principal,
+        )
         self._store_idempotency(
             principal,
             "session.start",
@@ -511,17 +525,21 @@ class OperationalService:
             "Recommendation approved" if approve else "Recommendation rejected",
             principal,
         )
-        self._repository.save_session(updated, expected_version=version)
+        approval_event = (
+            EventType.APPROVAL_GRANTED if approve else EventType.APPROVAL_REJECTED
+        )
+        self._save_with_events(
+            updated,
+            expected_version=version,
+            event_types=(approval_event,),
+            principal=principal,
+        )
         self._metrics = self._metrics.model_copy(
             update={
                 "approvals": self._metrics.approvals + (1 if approve else 0),
                 "rejections": self._metrics.rejections + (0 if approve else 1),
             }
         )
-        approval_event = (
-            EventType.APPROVAL_GRANTED if approve else EventType.APPROVAL_REJECTED
-        )
-        self._publish(approval_event, updated, principal)
         self._store_idempotency(
             principal,
             operation,
@@ -604,16 +622,22 @@ class OperationalService:
             ("learning.completed", "Learning record validated"),
         ):
             updated = self._append(updated, event_type, message, principal)
-        self._repository.save_session(updated, expected_version=version)
+        self._save_with_events(
+            updated,
+            expected_version=version,
+            event_types=(
+                EventType.EXECUTION_COMPLETED,
+                EventType.OBSERVATION_COMPLETED,
+                EventType.LEARNING_COMPLETED,
+            ),
+            principal=principal,
+        )
         self._metrics = self._metrics.model_copy(
             update={
                 "executions": self._metrics.executions + 1,
                 "sessions_completed": self._metrics.sessions_completed + 1,
             }
         )
-        self._publish(EventType.EXECUTION_COMPLETED, updated, principal)
-        self._publish(EventType.OBSERVATION_COMPLETED, updated, principal)
-        self._publish(EventType.LEARNING_COMPLETED, updated, principal)
         self._store_idempotency(
             principal,
             "execution.start",
@@ -656,8 +680,12 @@ class OperationalService:
                     principal,
                 )
                 recovered += 1
-            self._repository.save_session(current, expected_version=version)
-            self._publish(EventType.OBSERVABILITY_RECOVERED, current, principal)
+            self._save_with_events(
+                current,
+                expected_version=version,
+                event_types=(EventType.OBSERVABILITY_RECOVERED,),
+                principal=principal,
+            )
         return {"checked": len(sessions), "recovered": recovered, "failed": failed}
 
     def search_knowledge(
@@ -793,7 +821,18 @@ class OperationalService:
 
     def metrics(self) -> OperationalMetrics:
         """Return current operational counters."""
-        return self._metrics
+        if self._outbox_service is None:
+            return self._metrics
+        repository = getattr(self._outbox_service, "repository", None)
+        counts = repository.counts() if repository is not None else {}
+        return self._metrics.model_copy(
+            update={
+                "outbox_pending": counts.get("pending", 0)
+                + counts.get("processing", 0),
+                "outbox_delivered": counts.get("delivered", 0),
+                "outbox_failed": counts.get("failed", 0),
+            }
+        )
 
     def record_request(self, *, duration: float, errored: bool) -> None:
         """Record request counters without personal data labels."""
@@ -810,6 +849,33 @@ class OperationalService:
         """Record an authorization failure."""
         self._metrics = self._metrics.model_copy(
             update={"access_denied": self._metrics.access_denied + 1}
+        )
+
+    def record_login_throttled(self) -> None:
+        self._metrics = self._metrics.model_copy(
+            update={"login_throttled": self._metrics.login_throttled + 1}
+        )
+
+    def record_login_blocked(self) -> None:
+        self._metrics = self._metrics.model_copy(
+            update={"login_blocked": self._metrics.login_blocked + 1}
+        )
+
+    def record_rate_limit_hit(self) -> None:
+        self._metrics = self._metrics.model_copy(
+            update={"rate_limit_hits": self._metrics.rate_limit_hits + 1}
+        )
+
+    def record_jwt_validation_failure(self) -> None:
+        self._metrics = self._metrics.model_copy(
+            update={
+                "jwt_validation_failures": self._metrics.jwt_validation_failures + 1
+            }
+        )
+
+    def record_revoked_session(self) -> None:
+        self._metrics = self._metrics.model_copy(
+            update={"revoked_sessions": self._metrics.revoked_sessions + 1}
         )
 
     def _sessions_for(
@@ -922,6 +988,34 @@ class OperationalService:
             update={"timeline": (*session.timeline, entry), "updated_at": _now()}
         )
 
+    def _save_with_events(
+        self,
+        session: OperationalSessionView,
+        *,
+        expected_version: int | None,
+        event_types: tuple[EventType, ...],
+        principal: AuthenticatedPrincipal,
+    ) -> None:
+        events = tuple(
+            self._event(event_type, session, principal) for event_type in event_types
+        )
+        if self._outbox_enabled and self._repository.supports_transactional_outbox:
+            self._repository.save_session_with_events(
+                session,
+                expected_version=expected_version,
+                events=events,
+                actor_id=principal.user_id,
+            )
+            if self._outbox_service is not None:
+                process_once = getattr(self._outbox_service, "process_once", None)
+                if callable(process_once):
+                    process_once()
+            return
+        self._repository.save_session(session, expected_version=expected_version)
+        for event in events:
+            envelope = self._event_service.publish(event)
+            self._event_service.dispatch(envelope)
+
     def _publish(
         self,
         event_type: EventType,
@@ -929,22 +1023,30 @@ class OperationalService:
         principal: AuthenticatedPrincipal,
     ) -> None:
         envelope = self._event_service.publish(
-            Event(
-                event_type=event_type,
-                source="operational_api",
-                organization_id=session.organization_id,
-                session_id=session.session_id,
-                actor_reference=str(principal.user_id),
-                payload={
-                    "organization_id": str(session.organization_id),
-                    "session_id": str(session.session_id),
-                    "status": session.status.value,
-                },
-                metadata=EventMetadata(correlation_id=session.correlation_id),
-                priority=EventPriority.NORMAL,
-            )
+            self._event(event_type, session, principal)
         )
         self._event_service.dispatch(envelope)
+
+    @staticmethod
+    def _event(
+        event_type: EventType,
+        session: OperationalSessionView,
+        principal: AuthenticatedPrincipal,
+    ) -> Event:
+        return Event(
+            event_type=event_type,
+            source="operational_api",
+            organization_id=session.organization_id,
+            session_id=session.session_id,
+            actor_reference=str(principal.user_id),
+            payload={
+                "organization_id": str(session.organization_id),
+                "session_id": str(session.session_id),
+                "status": session.status.value,
+            },
+            metadata=EventMetadata(correlation_id=session.correlation_id),
+            priority=EventPriority.NORMAL,
+        )
 
     def _seed_knowledge(self, organization_id: UUID, prefix: str) -> None:
         base = [
