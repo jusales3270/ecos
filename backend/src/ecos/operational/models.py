@@ -183,4 +183,13 @@ class OperationalMetrics(OperationalModel):
     execution_failures: int = 0
     access_denied: int = 0
     cross_tenant_attempts: int = 0
+    login_throttled: int = 0
+    login_blocked: int = 0
+    rate_limit_hits: int = 0
+    jwt_validation_failures: int = 0
+    revoked_sessions: int = 0
+    outbox_pending: int = 0
+    outbox_delivered: int = 0
+    outbox_failed: int = 0
+    reconciliation_checks: int = 0
     latency_seconds_total: float = 0.0

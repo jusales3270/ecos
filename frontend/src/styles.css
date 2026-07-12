@@ -72,6 +72,11 @@ code {
   font-size: 0.875rem;
 }
 
+.version {
+  color: var(--muted);
+  padding: 0 1rem 1rem;
+}
+
 .sidebar {
   background: #162124;
   color: white;

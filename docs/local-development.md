@@ -47,6 +47,8 @@ curl http://127.0.0.1:8000/health/version
 curl http://127.0.0.1:8000/metrics
 ```
 
+`/health/live` não depende do banco. `/health/ready` valida PostgreSQL, schema Alembic, tabelas essenciais, outbox e configuração obrigatória quando PostgreSQL está habilitado.
+
 ## Interface operacional
 
 A interface contém:
@@ -112,6 +114,15 @@ export ECOS_AUTH_AUDIENCE=ecos.api
 
 Produção (`ECOS_ENVIRONMENT=production` ou `prod`) falha na inicialização se `ECOS_AUTH_TOKEN_SECRET` permanecer no valor padrão de desenvolvimento ou tiver menos de 32 caracteres. Senhas são verificadas com Argon2id via `argon2-cffi`; tokens Bearer são JWT assinados e expirável via `PyJWT`. Tokens inválidos, expirados, revogados ou adulterados retornam 401.
 
+Para testar rotação JWT local:
+
+```bash
+export ECOS_AUTH_TOKEN_KEY_RING='local-dev:development-only-auth-secret-change-me-000000,previous:previous-development-secret-change-me-000000'
+export ECOS_AUTH_ACTIVE_KEY_ID=local-dev
+```
+
+Login throttling e rate limiting usam PostgreSQL quando `ECOS_SECURITY_REPOSITORY=postgres`; em memória fica restrito a desenvolvimento/teste explícito.
+
 Login local:
 
 ```bash
@@ -155,6 +166,9 @@ make frontend-test
 make frontend-build
 make docker-config
 make docker-build
+make backend-audit
+make frontend-audit
+make secret-scan
 make up
 make migrations
 make health
@@ -178,6 +192,8 @@ A suíte cobre login como operador, criação de sessão, processamento cognitiv
 - Migrations falhando: execute `docker compose run --rm migrations` e confirme `ECOS_DATABASE_URL`.
 - Frontend 404 em rotas: execute `npm run build` ou use a imagem Docker final.
 - Sessão inválida: faça logout, limpe cookies `ecos_session`/`ecos_csrf` e autentique novamente.
+- Rate limit: respostas 429 incluem `Retry-After`.
+- Outbox: administradores podem consultar `/api/v1/admin/outbox` e processar `/api/v1/admin/outbox/process`.
 - Estado local inconsistente: `docker compose down`, remova o volume `postgres_data` apenas em ambiente local descartável e suba novamente.
 
 ## Limitações atuais

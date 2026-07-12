@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Integer, String, Text, delete, select, update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -18,16 +18,22 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ecos.database import create_database_engine, create_session_factory
+from ecos.events import Event
 from ecos.operational.exceptions import (
     IdempotencyConflictError,
     OperationalConflictError,
 )
-from ecos.operational.models import OperationalSessionView
+from ecos.operational.models import (
+    ApprovalStatus,
+    ExecutionStatus,
+    OperationalSessionView,
+)
 from ecos.operational.repository import (
     IdempotencyRecord,
     OperationalRepository,
     utc_now,
 )
+from ecos.outbox import OutboxRecord, message_from_event
 from ecos.session.orm import Base
 
 
@@ -101,8 +107,100 @@ class OperationalIdempotencyRecord(Base):
     )
 
 
+class OperationalTimelineEntryRecord(Base):
+    """Append-only operational timeline row."""
+
+    __tablename__ = "operational_timeline_entries"
+
+    entry_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    correlation_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    safe_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class OperationalApprovalDecisionRecord(Base):
+    """Append-only operational approval decision row."""
+
+    __tablename__ = "operational_approval_decisions"
+
+    decision_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    approval_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    approver_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    justification: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class OperationalExecutionAttemptRecord(Base):
+    """Append-only operational execution attempt row."""
+
+    __tablename__ = "operational_execution_attempts"
+
+    attempt_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    execution_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    approval_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    result: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class PostgresOperationalRepository(OperationalRepository):
     """OperationalRepository backed by PostgreSQL and SQLAlchemy."""
+
+    supports_transactional_outbox = True
 
     def __init__(
         self,
@@ -121,8 +219,30 @@ class PostgresOperationalRepository(OperationalRepository):
     ) -> tuple[OperationalSessionView, int]:
         return _run(self._save_session(session, expected_version=expected_version))
 
+    def save_session_with_events(
+        self,
+        session: OperationalSessionView,
+        *,
+        expected_version: int | None,
+        events: tuple[Event, ...],
+        actor_id: UUID | None,
+    ) -> tuple[OperationalSessionView, int]:
+        return _run(
+            self._save_session(
+                session,
+                expected_version=expected_version,
+                events=events,
+                actor_id=actor_id,
+            )
+        )
+
     async def _save_session(
-        self, session: OperationalSessionView, *, expected_version: int | None
+        self,
+        session: OperationalSessionView,
+        *,
+        expected_version: int | None,
+        events: tuple[Event, ...] = (),
+        actor_id: UUID | None = None,
     ) -> tuple[OperationalSessionView, int]:
         async with self._session_factory() as database:
             existing = await database.get(OperationalSessionRecord, session.session_id)
@@ -131,6 +251,8 @@ class PostgresOperationalRepository(OperationalRepository):
                     raise OperationalConflictError("session was modified concurrently")
                 row = _session_row(session, version=1)
                 database.add(OperationalSessionRecord(**row))
+                await self._append_normalized(database, session)
+                self._append_outbox(database, events, actor_id=actor_id)
                 await database.commit()
                 return session, 1
             if expected_version is not None and existing.version != expected_version:
@@ -149,8 +271,118 @@ class PostgresOperationalRepository(OperationalRepository):
             if result.rowcount != 1:
                 await database.rollback()
                 raise OperationalConflictError("session was modified concurrently")
+            await self._append_normalized(database, session)
+            self._append_outbox(database, events, actor_id=actor_id)
             await database.commit()
             return session, next_version
+
+    async def _append_normalized(
+        self, database: AsyncSession, session: OperationalSessionView
+    ) -> None:
+        existing_sequences = set(
+            (
+                await database.scalars(
+                    select(OperationalTimelineEntryRecord.sequence).where(
+                        OperationalTimelineEntryRecord.organization_id
+                        == session.organization_id,
+                        OperationalTimelineEntryRecord.session_id == session.session_id,
+                    )
+                )
+            ).all()
+        )
+        for entry in session.timeline:
+            if entry.sequence in existing_sequences:
+                continue
+            database.add(
+                OperationalTimelineEntryRecord(
+                    entry_id=uuid4(),
+                    organization_id=session.organization_id,
+                    session_id=session.session_id,
+                    sequence=entry.sequence,
+                    event_type=entry.event_type,
+                    message=entry.message,
+                    actor_id=entry.actor_id,
+                    correlation_id=entry.correlation_id,
+                    safe_metadata=entry.safe_metadata,
+                    occurred_at=entry.occurred_at,
+                )
+            )
+        if session.approval is not None and session.approval.status in {
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.REJECTED,
+        }:
+            exists = await database.scalar(
+                select(OperationalApprovalDecisionRecord.decision_id).where(
+                    OperationalApprovalDecisionRecord.organization_id
+                    == session.organization_id,
+                    OperationalApprovalDecisionRecord.approval_id
+                    == session.approval.approval_id,
+                )
+            )
+            if exists is None and session.approval.decided_by is not None:
+                database.add(
+                    OperationalApprovalDecisionRecord(
+                        decision_id=uuid4(),
+                        organization_id=session.organization_id,
+                        session_id=session.session_id,
+                        approval_id=session.approval.approval_id,
+                        status=session.approval.status.value,
+                        approver_id=session.approval.decided_by,
+                        justification=session.approval.rejection_reason,
+                        correlation_id=session.approval.correlation_id,
+                        decided_at=session.approval.decided_at or utc_now(),
+                    )
+                )
+        if session.execution is not None and session.execution.status in {
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.FAILED,
+        }:
+            exists = await database.scalar(
+                select(OperationalExecutionAttemptRecord.attempt_id).where(
+                    OperationalExecutionAttemptRecord.organization_id
+                    == session.organization_id,
+                    OperationalExecutionAttemptRecord.execution_id
+                    == session.execution.execution_id,
+                    OperationalExecutionAttemptRecord.attempt_number
+                    == session.execution.attempts,
+                )
+            )
+            if (
+                exists is None
+                and session.execution.approval_id is not None
+                and session.execution.attempts > 0
+            ):
+                database.add(
+                    OperationalExecutionAttemptRecord(
+                        attempt_id=uuid4(),
+                        organization_id=session.organization_id,
+                        session_id=session.session_id,
+                        execution_id=session.execution.execution_id,
+                        approval_id=session.execution.approval_id,
+                        attempt_number=session.execution.attempts,
+                        status=session.execution.status.value,
+                        result=session.execution.result,
+                        error=session.execution.error,
+                        correlation_id=session.execution.correlation_id,
+                        started_at=session.execution.updated_at,
+                        completed_at=session.execution.updated_at,
+                    )
+                )
+
+    @staticmethod
+    def _append_outbox(
+        database: AsyncSession, events: tuple[Event, ...], *, actor_id: UUID | None
+    ) -> None:
+        for event in events:
+            message = message_from_event(
+                event,
+                actor_id=actor_id,
+                aggregate_type="operational_session",
+                aggregate_id="" if event.session_id is None else str(event.session_id),
+            )
+            payload = asdict(message)
+            payload["status"] = message.status.value
+            database.add(OutboxRecord(**payload))
 
     def get_session(
         self, organization_id: UUID, session_id: UUID

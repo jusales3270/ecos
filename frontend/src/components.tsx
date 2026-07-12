@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import {
   Activity,
@@ -13,6 +14,7 @@ import {
   Users
 } from "lucide-react";
 import { useAuth } from "./auth";
+import { api } from "./api";
 
 const nav = [
   { to: "/", label: "Visão Geral", icon: CircleGauge },
@@ -26,6 +28,10 @@ const nav = [
 
 export function AppShell() {
   const { auth, logout } = useAuth();
+  const [version, setVersion] = useState<string>("");
+  useEffect(() => {
+    void api.version().then((item) => setVersion(item.version)).catch(() => setVersion(""));
+  }, []);
   return (
     <div className="app-shell">
       {auth?.demo ? <div className="demo-banner">Ambiente demo local</div> : null}
@@ -46,6 +52,7 @@ export function AppShell() {
           <LogOut aria-hidden="true" />
           <span>Sair</span>
         </button>
+        {version ? <small className="version">v{version}</small> : null}
       </aside>
       <div className="workspace">
         <header className="topbar">

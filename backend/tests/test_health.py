@@ -13,7 +13,7 @@ def test_root_returns_application_status() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "name": "ECOS",
-        "version": "0.1.0",
+        "version": "0.1.0-rc.1",
         "status": "running",
     }
 
@@ -27,7 +27,7 @@ def test_health_returns_backend_container_provider_and_runtime_status() -> None:
     assert response.json() == {
         "status": "ok",
         "service": "ecos-backend",
-        "version": "0.1.0",
+        "version": "0.1.0-rc.1",
         "backend": "ok",
         "container": "ok",
         "providers": {"CUSTOM": True},

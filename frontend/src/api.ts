@@ -5,7 +5,10 @@ import type {
   Execution,
   KnowledgeResult,
   OperationalSession,
-  Overview
+  OutboxMessage,
+  Overview,
+  ReadinessInfo,
+  VersionInfo
 } from "./types";
 
 export class ApiError extends Error {
@@ -53,6 +56,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     }
     if (response.status === 409) {
       message = message || "Conflito de estado. Atualize e tente novamente.";
+    }
+    if (response.status === 401) {
+      message = message || "Sessão expirada ou revogada. Entre novamente.";
     }
     if (response.status === 429) {
       const retry = response.headers.get("Retry-After");
@@ -126,6 +132,9 @@ export const api = {
   roles: () => request<string[]>("/api/v1/admin/roles"),
   permissions: () => request<string[]>("/api/v1/admin/permissions"),
   orgSettings: () => request<Record<string, unknown>>("/api/v1/admin/settings"),
+  version: () => request<VersionInfo>("/health/version"),
+  readiness: () => request<ReadinessInfo>("/api/v1/admin/readiness"),
+  outbox: () => request<OutboxMessage[]>("/api/v1/admin/outbox"),
   reconcile: () =>
     request<Record<string, unknown>>("/api/v1/admin/reconcile", {
       method: "POST",

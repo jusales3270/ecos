@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from datetime import timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from ecos.security import (
     Role,
     SecurityContext,
 )
+from ecos.security.controls import safe_hash
 
 router = APIRouter(prefix="/api/v1")
 
@@ -87,13 +89,35 @@ def web_login(
     ops: Annotated[OperationalService, Depends(operational)],
 ) -> dict[str, Any]:
     """Authenticate browser clients using HttpOnly cookie sessions."""
-    organization_id = ops.resolve_login_organization(payload.email)
-    token, principal_ = container_.security_service.login(
-        email=payload.email,
-        password=payload.password,
-        organization_id=organization_id,
-        correlation_id=request.state.correlation_id_uuid,
+    scope_hash = safe_hash(
+        "login", payload.email, request.client.host if request.client else "unknown"
     )
+    decision = container_.security_controls.check_login(
+        scope_hash, window=timedelta(seconds=settings.login_throttle_window_seconds)
+    )
+    if not decision.allowed:
+        ops.record_login_blocked()
+        raise AuthenticationError("invalid credentials")
+    organization_id: UUID | None = None
+    try:
+        organization_id = ops.resolve_login_organization(payload.email)
+        token, principal_ = container_.security_service.login(
+            email=payload.email,
+            password=payload.password,
+            organization_id=organization_id,
+            correlation_id=request.state.correlation_id_uuid,
+        )
+    except AuthenticationError:
+        container_.security_controls.record_login_failure(
+            scope_hash,
+            organization_id=organization_id,
+            window=timedelta(seconds=settings.login_throttle_window_seconds),
+            limit=settings.login_throttle_limit,
+            block_for=timedelta(seconds=settings.login_throttle_block_seconds),
+        )
+        ops.record_login_throttled()
+        raise
+    container_.security_controls.reset_login(scope_hash)
     secure = settings.environment.lower() not in {"development", "local", "test"}
     same_site = "strict" if secure else "lax"
     response.set_cookie(
@@ -135,6 +159,7 @@ def logout(
             principal_.token_id,
             correlation_id=principal_.correlation_id,
         )
+        container_.operational_service.record_revoked_session()
     response.delete_cookie(settings.web_cookie_name, path="/")
     response.delete_cookie(settings.csrf_cookie_name, path="/")
     return {"status": "logged_out"}
@@ -377,6 +402,46 @@ def api_metrics(
 @router.get("/health/components")
 def component_health(container_: Annotated[Container, Depends(container)]):
     return container_.health()
+
+
+@router.get("/admin/outbox")
+def outbox(
+    principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
+    container_: Annotated[Container, Depends(container)],
+):
+    principal_.require_permission(Permission.ADMINISTER_ORGANIZATION)
+    return [
+        {
+            "message_id": str(item.message_id),
+            "event_type": item.event_type,
+            "status": item.status.value,
+            "attempts": item.attempts,
+            "created_at": item.created_at.isoformat(),
+            "delivered_at": None
+            if item.delivered_at is None
+            else item.delivered_at.isoformat(),
+            "last_error": item.last_error,
+        }
+        for item in container_.outbox_repository.list(principal_.organization_id)
+    ]
+
+
+@router.post("/admin/outbox/process")
+def process_outbox(
+    principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
+    container_: Annotated[Container, Depends(container)],
+):
+    principal_.require_permission(Permission.ADMINISTER_ORGANIZATION)
+    return container_.outbox_service.process_once()
+
+
+@router.get("/admin/readiness")
+def admin_readiness(
+    principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
+    container_: Annotated[Container, Depends(container)],
+):
+    principal_.require_permission(Permission.ADMINISTER_ORGANIZATION)
+    return container_.readiness()
 
 
 @router.get("/admin/members")
