@@ -5,10 +5,10 @@ Este guia prepara o ECOS para execução em ambiente de desenvolvimento usando s
 ## Docker Compose
 
 ```bash
-docker compose up
+docker compose up -d --build
 ```
 
-O Compose sobe `postgres:16`, `redis:7`, `backend` e `pgadmin` em uma rede única, com volumes persistentes e healthchecks.
+O Compose sobe `postgres:16`, `migrations` e `app` em uma rede interna, com volume persistente e healthchecks. Migrations executam antes da aplicação. Não há fallback silencioso para memória quando PostgreSQL é selecionado.
 
 ## Backend com uv
 
@@ -26,12 +26,62 @@ uv sync
 uv run uvicorn ecos.main:app --reload
 ```
 
+## Frontend com Vite
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+O Vite usa proxy para `http://127.0.0.1:8000`. A imagem Docker compila o frontend e o backend serve `frontend/dist`, com fallback para refresh de rotas React.
+
 ## Endpoints úteis
 
 ```bash
 curl http://127.0.0.1:8000/
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/health/live
+curl http://127.0.0.1:8000/health/ready
+curl http://127.0.0.1:8000/health/version
+curl http://127.0.0.1:8000/metrics
 ```
+
+## Interface operacional
+
+A interface contém:
+
+- Login com cookie HttpOnly, logout com revogação e banner demo local.
+- Visão geral com organização, usuário, papéis, permissões, sessões, aprovações, execuções, confiança, eventos e saúde.
+- Sessões cognitivas com criação, início humano do fluxo, timeline, contexto, estágios e recomendação.
+- Aprovações com segregação de funções: solicitante não aprova quando política exige independência.
+- Execuções bloqueadas até aprovação explícita; demo/E2E usam apenas `memory.dry_run`.
+- Knowledge Graph com pesquisa semântica estruturada, entidade, relacionamentos e cadeias.
+- Auditoria/observabilidade com eventos, correlation_id e métricas.
+- Administração organizacional escopada ao tenant.
+
+O frontend nunca escolhe `organization_id` para autorização. Payloads tentando sobrescrever tenant são ignorados pelo backend.
+
+## Autenticação web e CSRF
+
+`POST /api/v1/auth/login` autentica senha local, cria sessão e grava:
+
+- `ecos_session`: cookie HttpOnly com token assinado;
+- `ecos_csrf`: cookie legível usado pelo frontend no header `X-CSRF-Token`.
+
+Operações mutáveis autenticadas por cookie sem CSRF válido retornam 401. Clientes programáticos podem continuar usando Bearer token nos endpoints existentes.
+
+## Credenciais demo locais
+
+Disponíveis somente com `ECOS_DEMO_SEED_ENABLED=true` fora de produção:
+
+- `operator@demo.ecos.local` / `operator-demo-password`
+- `approver@demo.ecos.local` / `approver-demo-password`
+- `auditor@demo.ecos.local` / `auditor-demo-password`
+- `admin@demo.ecos.local` / `admin-demo-password`
+- `operator@tenant-b.ecos.local` / `tenant-b-demo-password`
+
+Produção recusa inicialização com demo habilitado.
 
 ## Runtime demo
 
@@ -90,6 +140,49 @@ Papéis organizacionais implementados:
 - `global_admin`: capacidade global separada e explícita.
 
 Permissões são derivadas de papel e podem ser estendidas no vínculo usuário-organização. O `organization_id` usado pelos serviços escopados vem do principal autenticado; valores enviados pelo cliente em body/query/payload não sobrescrevem a identidade.
+
+## Comandos úteis
+
+```bash
+make backend-sync
+make backend-lint
+make backend-format-check
+make backend-test
+make frontend-install
+make frontend-lint
+make frontend-typecheck
+make frontend-test
+make frontend-build
+make docker-config
+make docker-build
+make up
+make migrations
+make health
+make logs
+make down
+```
+
+## Testes E2E
+
+```bash
+cd frontend
+npx playwright install chromium
+npm run e2e
+```
+
+A suíte cobre login como operador, criação de sessão, processamento cognitivo, tentativa de aprovação pelo solicitante, aprovação independente, execução controlada, observação, aprendizado, auditoria, bloqueio cross-tenant, logout e redirecionamento de rota protegida.
+
+## Diagnóstico e recuperação local
+
+- Health falhando: verifique `docker compose ps`, `docker compose logs app` e `/health/ready`.
+- Migrations falhando: execute `docker compose run --rm migrations` e confirme `ECOS_DATABASE_URL`.
+- Frontend 404 em rotas: execute `npm run build` ou use a imagem Docker final.
+- Sessão inválida: faça logout, limpe cookies `ecos_session`/`ecos_csrf` e autentique novamente.
+- Estado local inconsistente: `docker compose down`, remova o volume `postgres_data` apenas em ambiente local descartável e suba novamente.
+
+## Limitações atuais
+
+O estado operacional do Sprint 18A é determinístico e voltado para dev/E2E. Não há IdP externo, Kubernetes, Redis/fila operacional, editor visual complexo de grafo nem efeitos externos reais. A execução demo permanece em dry-run.
 
 Eventos de segurança são append-only e projetados para auditoria/observability: autenticação bem-sucedida, falha de autenticação, acesso negado, tentativa cross-tenant, criação/revogação de sessão, mudança de papel/permissão e execução privilegiada. A redação central mascara authorization headers, cookies, senhas, tokens, API keys, secrets, credenciais e campos sensíveis configuráveis.
 

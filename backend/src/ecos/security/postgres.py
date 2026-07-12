@@ -162,6 +162,14 @@ class PostgresSecurityRepository(SecurityRepository):
             )
             return None if row is None else _user_model(row)
 
+    def list_users(self) -> list[UserIdentity]:
+        return _run(self._list_users())
+
+    async def _list_users(self) -> list[UserIdentity]:
+        async with self._session_factory() as database:
+            rows = await database.scalars(select(SecurityUserRecord))
+            return [_user_model(row) for row in rows]
+
     def add_organization(
         self, organization: OrganizationIdentity
     ) -> OrganizationIdentity:
@@ -182,6 +190,14 @@ class PostgresSecurityRepository(SecurityRepository):
         async with self._session_factory() as database:
             row = await database.get(SecurityOrganizationRecord, organization_id)
             return None if row is None else _organization_model(row)
+
+    def list_organizations(self) -> list[OrganizationIdentity]:
+        return _run(self._list_organizations())
+
+    async def _list_organizations(self) -> list[OrganizationIdentity]:
+        async with self._session_factory() as database:
+            rows = await database.scalars(select(SecurityOrganizationRecord))
+            return [_organization_model(row) for row in rows]
 
     def add_membership(
         self, membership: UserOrganizationMembership
@@ -210,6 +226,33 @@ class PostgresSecurityRepository(SecurityRepository):
                 )
             )
             return None if row is None else _membership_model(row)
+
+    def list_memberships(
+        self,
+        *,
+        user_id: UUID | None = None,
+        organization_id: UUID | None = None,
+    ) -> list[UserOrganizationMembership]:
+        return _run(
+            self._list_memberships(user_id=user_id, organization_id=organization_id)
+        )
+
+    async def _list_memberships(
+        self,
+        *,
+        user_id: UUID | None,
+        organization_id: UUID | None,
+    ) -> list[UserOrganizationMembership]:
+        statement = select(SecurityMembershipRecord)
+        if user_id is not None:
+            statement = statement.where(SecurityMembershipRecord.user_id == user_id)
+        if organization_id is not None:
+            statement = statement.where(
+                SecurityMembershipRecord.organization_id == organization_id
+            )
+        async with self._session_factory() as database:
+            rows = await database.scalars(statement)
+            return [_membership_model(row) for row in rows]
 
     def set_password_credential(
         self, credential: PasswordCredential

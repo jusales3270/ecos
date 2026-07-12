@@ -2,13 +2,17 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
+from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from ecos.api import router as api_v1_router
 from ecos.core import (
     Container,
     EcosError,
@@ -83,6 +87,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="ECOS Backend", version=settings.version, lifespan=lifespan)
+app.include_router(api_v1_router)
 
 
 @app.exception_handler(EcosError)
@@ -118,7 +123,8 @@ async def authorization_error_handler(
     request: Request, exc: AuthorizationError
 ) -> JSONResponse:
     """Return standardized 403 authorization errors."""
-    del request
+    if hasattr(request.app.state, "container"):
+        request.app.state.container.operational_service.record_access_denied()
     return JSONResponse(
         status_code=403,
         content={"error": {"code": exc.code, "message": exc.message, "details": {}}},
@@ -131,9 +137,30 @@ async def correlation_id_middleware(request: Request, call_next: Any) -> Any:
     correlation_id = set_correlation_id(
         request.headers.get(settings.correlation_id_header)
     )
+    request.state.correlation_id_uuid = _correlation_uuid(correlation_id)
     response = await call_next(request)
     response.headers[settings.correlation_id_header] = correlation_id
     return response
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next: Any) -> Response:
+    """Collect basic request counters without personal labels."""
+    started = perf_counter()
+    errored = False
+    try:
+        response: Response = await call_next(request)
+        errored = response.status_code >= 500
+        return response
+    except Exception:
+        errored = True
+        raise
+    finally:
+        if hasattr(request.app.state, "container"):
+            request.app.state.container.operational_service.record_request(
+                duration=perf_counter() - started,
+                errored=errored,
+            )
 
 
 @app.middleware("http")
@@ -165,7 +192,7 @@ async def security_headers_and_payload_middleware(
 async def optional_authentication_middleware(
     request: Request, call_next: Any
 ) -> Response:
-    """Resolve bearer identity when supplied and fail closed for bad tokens."""
+    """Resolve bearer or browser-cookie identity and fail closed for bad tokens."""
     if not hasattr(request.app.state, "container"):
         return await call_next(request)
     container: Container = request.app.state.container
@@ -173,14 +200,37 @@ async def optional_authentication_middleware(
         request.headers.get(settings.correlation_id_header)
     )
     authorization = request.headers.get("authorization")
+    token: str | None = None
     if authorization:
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:
             raise AuthenticationError("invalid authorization header")
-        principal = container.security_service.authenticate_bearer_token(
-            token,
-            correlation_id=correlation_id,
-        )
+        request.state.auth_via_cookie = False
+    elif request.cookies.get(settings.web_cookie_name):
+        token = request.cookies[settings.web_cookie_name]
+        request.state.auth_via_cookie = True
+    if token:
+        try:
+            principal = container.security_service.authenticate_bearer_token(
+                token,
+                correlation_id=correlation_id,
+            )
+        except AuthenticationError:
+            if getattr(request.state, "auth_via_cookie", False) and not (
+                request.url.path.startswith("/api/")
+            ):
+                return await call_next(request)
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "code": "AUTHENTICATION_ERROR",
+                        "message": "authentication required",
+                        "details": {},
+                    }
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         request.state.security_context = (
             container.security_service.context_for_principal(principal)
         )
@@ -204,6 +254,64 @@ def health(request: Request) -> dict[str, Any]:
         "backend": "ok",
         **container.health(),
     }
+
+
+@app.get("/health/live")
+def health_live() -> dict[str, Any]:
+    """Liveness check that does not depend on external services."""
+    return {
+        "status": "ok",
+        "service": settings.service_name,
+        "version": settings.version,
+        "environment": settings.environment,
+    }
+
+
+@app.get("/health/ready")
+def health_ready(request: Request) -> dict[str, Any]:
+    """Readiness check for configured dependencies."""
+    container: Container = request.app.state.container
+    health_payload = container.health()
+    ready = (
+        bool(health_payload.get("runtime")) and health_payload.get("container") == "ok"
+    )
+    if settings.knowledge_repository == "postgres":
+        ready = (
+            ready
+            and container.knowledge_graph_service.health().status.value == "healthy"
+        )
+    return {
+        "status": "ready" if ready else "not_ready",
+        "service": settings.service_name,
+        "version": settings.version,
+        "environment": settings.environment,
+        "dependencies": health_payload,
+    }
+
+
+@app.get("/health/version")
+def health_version() -> dict[str, str]:
+    """Return build/version metadata."""
+    return {
+        "name": settings.name,
+        "service": settings.service_name,
+        "version": settings.version,
+        "environment": settings.environment,
+    }
+
+
+@app.get("/metrics")
+def metrics(request: Request) -> PlainTextResponse:
+    """Expose simple Prometheus-compatible operational metrics."""
+    if not settings.metrics_enabled:
+        return PlainTextResponse("metrics_disabled 1\n", media_type="text/plain")
+    values = request.app.state.container.operational_service.metrics()
+    lines = []
+    for name, value in values.model_dump().items():
+        metric_name = f"ecos_{name}"
+        lines.append(f"# TYPE {metric_name} gauge")
+        lines.append(f"{metric_name} {value}")
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain")
 
 
 @app.post("/auth/login")
@@ -291,3 +399,36 @@ def _principal_response(principal: AuthenticatedPrincipal) -> PrincipalResponse:
         expires_at=principal.expires_at.isoformat(),
         correlation_id=principal.correlation_id,
     )
+
+
+def _frontend_dist() -> Path:
+    root = Path(__file__).resolve().parents[3]
+    configured = Path(settings.frontend_static_dir)
+    return configured if configured.is_absolute() else root / configured
+
+
+frontend_dist = _frontend_dist()
+assets_dir = frontend_dist / "assets"
+if assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def frontend_app(full_path: str) -> Response:
+    """Serve the compiled React app with route-refresh fallback."""
+    del full_path
+    index = _frontend_dist() / "index.html"
+    if not index.exists():
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "code": "FRONTEND_NOT_BUILT",
+                    "message": "frontend build artifact is not available",
+                    "details": {},
+                }
+            },
+        )
+    response = FileResponse(index)
+    response.headers["Cache-Control"] = "no-store"
+    return response

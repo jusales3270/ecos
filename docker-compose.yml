@@ -4,9 +4,7 @@ services:
     environment:
       POSTGRES_DB: ecos
       POSTGRES_USER: ecos
-      POSTGRES_PASSWORD: ecos
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${ECOS_POSTGRES_PASSWORD:-ecos}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -15,84 +13,68 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - ecos
+      - ecos_internal
 
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - ecos
-
-  backend:
-    image: python:3.12-slim
-    working_dir: /app/backend
-    command: >
-      sh -c "pip install --no-cache-dir uv &&
-      uv sync &&
-      uv run uvicorn ecos.main:app --host 0.0.0.0 --port 8000"
-    env_file:
-      - backend/.env.example
+  migrations:
+    build:
+      context: .
+    command: ["alembic", "upgrade", "head"]
     environment:
-      ECOS_DATABASE_URL: postgresql://ecos:ecos@postgres:5432/ecos
-      ECOS_REDIS_URL: redis://redis:6379/0
+      ECOS_ENVIRONMENT: ${ECOS_ENVIRONMENT:-development}
+      ECOS_DATABASE_URL: postgresql://ecos:${ECOS_POSTGRES_PASSWORD:-ecos}@postgres:5432/ecos
+      ECOS_SESSION_REPOSITORY: postgres
+      ECOS_MEMORY_REPOSITORY: postgres
+      ECOS_OBSERVABILITY_REPOSITORY: postgres
+      ECOS_KNOWLEDGE_REPOSITORY: postgres
+      ECOS_SECURITY_REPOSITORY: postgres
+      ECOS_AUTH_TOKEN_SECRET: ${ECOS_AUTH_TOKEN_SECRET:-development-only-auth-secret-change-me-000000}
+      ECOS_AUTH_DEMO_ENABLED: ${ECOS_AUTH_DEMO_ENABLED:-true}
+      ECOS_DEMO_SEED_ENABLED: ${ECOS_DEMO_SEED_ENABLED:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ecos_internal
+    restart: "no"
+
+  app:
+    build:
+      context: .
+    environment:
+      ECOS_ENVIRONMENT: ${ECOS_ENVIRONMENT:-development}
+      ECOS_DATABASE_URL: postgresql://ecos:${ECOS_POSTGRES_PASSWORD:-ecos}@postgres:5432/ecos
+      ECOS_SESSION_REPOSITORY: postgres
+      ECOS_MEMORY_REPOSITORY: postgres
+      ECOS_OBSERVABILITY_REPOSITORY: postgres
+      ECOS_KNOWLEDGE_REPOSITORY: postgres
+      ECOS_SECURITY_REPOSITORY: postgres
+      ECOS_AUTH_TOKEN_SECRET: ${ECOS_AUTH_TOKEN_SECRET:-development-only-auth-secret-change-me-000000}
+      ECOS_AUTH_DEMO_ENABLED: ${ECOS_AUTH_DEMO_ENABLED:-true}
+      ECOS_DEMO_SEED_ENABLED: ${ECOS_DEMO_SEED_ENABLED:-true}
+      ECOS_AI_PROVIDER: fake
     ports:
       - "8000:8000"
-    volumes:
-      - .:/app
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
     healthcheck:
       test:
-        - CMD-SHELL
-        - >
-          python -c "import urllib.request;
-          urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - ecos
-
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@example.local
-      PGADMIN_DEFAULT_PASSWORD: change-me-development-only
-    ports:
-      - "5050:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >
-          python -c "import urllib.request;
-          urllib.request.urlopen('http://127.0.0.1/misc/ping', timeout=3)"
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - ecos
+      - ecos_internal
+    restart: unless-stopped
 
 volumes:
   postgres_data:
-  redis_data:
-  pgadmin_data:
 
 networks:
-  ecos:
+  ecos_internal:
     driver: bridge
