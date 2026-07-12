@@ -8,8 +8,11 @@ import {
   ApprovalsPage,
   AuditPage,
   ExecutionsPage,
+  GovernancePage,
   KnowledgePage,
+  LearningPage,
   LoginPage,
+  MemoryPage,
   OverviewPage,
   SessionDetailPage,
   SessionsPage
@@ -29,10 +32,13 @@ const router = createBrowserRouter([
       { index: true, element: <OverviewPage /> },
       { path: "sessions", element: <SessionsPage /> },
       { path: "sessions/:id", element: <SessionDetailPage /> },
+      { path: "memory", element: <MemoryPage /> },
       { path: "approvals", element: <ApprovalsPage /> },
       { path: "executions", element: <ExecutionsPage /> },
       { path: "knowledge", element: <KnowledgePage /> },
+      { path: "governance", element: <GovernancePage /> },
       { path: "audit", element: <AuditPage /> },
+      { path: "learning", element: <LearningPage /> },
       { path: "admin", element: <AdminPage /> }
     ]
   }

@@ -8,7 +8,7 @@ test("complete operational cycle with independent approval and audit", async ({
   await page.getByLabel("E-mail").fill("operator@demo.ecos.local");
   await page.getByLabel("Senha").fill("operator-demo-password");
   await page.getByRole("button", { name: "Entrar" }).click();
-  await expect(page.getByRole("heading", { name: "Visão Geral" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Visão Cognitiva" })).toBeVisible();
 
   await page.getByRole("link", { name: "Sessões" }).click();
   await page.getByRole("button", { name: "Criar sessão" }).click();
@@ -36,7 +36,7 @@ test("complete operational cycle with independent approval and audit", async ({
   await expect(page.getByText("Dry-run connector completed")).toBeVisible();
   await expect(page.getByText("safe validation path")).toBeVisible();
 
-  await page.getByRole("link", { name: "Auditoria" }).click();
+  await page.getByRole("link", { name: "Observabilidade" }).click();
   await expect(page.getByText("EXECUTION_COMPLETED")).toBeVisible();
 
   const login = await request.post("/api/v1/auth/login", {
