@@ -25,7 +25,6 @@ from ecos.governance import (
     GovernanceConfig,
     GovernanceEngine,
     InMemoryPolicyProvider,
-    StaticIdentityPort,
     demo_policy,
 )
 from ecos.knowledge import (
@@ -111,6 +110,16 @@ from ecos.runtime.adapters import (
     SimulationExecutor,
     SpecialistsExecutor,
 )
+from ecos.security import (
+    InMemorySecurityRepository,
+    Role,
+    SecurityIdentityPort,
+    SecurityRepository,
+    SecurityService,
+    TenantScopedMemoryService,
+    TenantScopedSessionService,
+)
+from ecos.security.postgres import PostgresSecurityRepository
 from ecos.session import PostgresSessionRepository, SessionRepository, SessionService
 from ecos.simulation import AIWarEngine, SimulationService
 from ecos.specialists import (
@@ -255,6 +264,30 @@ class Container:
             clock=lambda: datetime.now(UTC),
         )
         self.event_service.register_projector(self.knowledge_projector)
+        self.security_repository: SecurityRepository
+        if self.settings.security_repository == "postgres":
+            self.security_repository = PostgresSecurityRepository(
+                self.settings.database_url
+            )
+        else:
+            self.security_repository = InMemorySecurityRepository()
+        self.security_service = SecurityService(
+            self.security_repository,
+            token_secret=self.settings.auth_token_secret,
+            issuer=self.settings.auth_issuer,
+            audience=self.settings.auth_audience,
+            token_ttl=self.settings.auth_token_ttl,
+            event_service=self.event_service,
+            clock=lambda: datetime.now(UTC),
+        )
+        if self.security_repository.get_user_by_email("admin@ecos.local") is None:
+            self.security_service.create_local_user(
+                email="admin@ecos.local",
+                display_name="ECOS Local Admin",
+                password="change-me-development-only",
+                organization_name="ECOS Local Organization",
+                roles=(Role.ADMIN,),
+            )
         if self.settings.memory_repository == "postgres":
             self.context_provider = ContextEngine(
                 self.memory_repository,
@@ -275,6 +308,14 @@ class Container:
             config=ObservationConfig(),
         )
         self.session_service = SessionService(self.session_repository)
+        self.tenant_memory_service = TenantScopedMemoryService(
+            self.memory_service,
+            self.security_service,
+        )
+        self.tenant_session_service = TenantScopedSessionService(
+            self.session_service,
+            self.security_service,
+        )
         self.context_service = ContextService(self.context_provider)
         self.specialist_registry = SpecialistRegistry()
         for specialist in self.specialist_provider.load():
@@ -352,7 +393,7 @@ class Container:
         self.approval_policy_provider = DefaultApprovalPolicyProvider(
             self.governance_config
         )
-        self.identity_port = StaticIdentityPort()
+        self.identity_port = SecurityIdentityPort(self.security_repository)
         self.governance_engine = GovernanceEngine(
             policy_provider=self.policy_provider,
             approval_policy_provider=self.approval_policy_provider,

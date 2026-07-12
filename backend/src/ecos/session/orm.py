@@ -19,6 +19,9 @@ class SessionRecord(Base):
     __tablename__ = "sessions"
 
     id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), index=True, nullable=False
+    )
     managed_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), unique=True, nullable=False
     )

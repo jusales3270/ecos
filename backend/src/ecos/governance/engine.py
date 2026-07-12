@@ -246,6 +246,12 @@ class GovernanceEngine:
             raise UnauthorizedRoleError("actor role is not allowed for request")
         if approval_request.expires_at <= self._now():
             raise ApprovalRequestExpiredError("approval request is expired")
+        if (
+            approval_request.distinct_approvers_required
+            and approval_request.requester_id is not None
+            and decision.actor_id == approval_request.requester_id
+        ):
+            raise UnauthorizedRoleError("requester cannot approve this request")
         if approval_request.status is ApprovalRequestStatus.REJECTED:
             raise ApprovalAfterRejectionError("approval request was already rejected")
         existing = [
@@ -818,6 +824,7 @@ class GovernanceEngine:
             session_id=request.session_id,
             plan_id=request.plan_id,
             correlation_id=request.correlation_id,
+            requester_id=request.actor_id or request.user_id,
             action_scope=request.requested_action,
             approval_level=requirement.approval_level,
             required_roles=requirement.required_roles,

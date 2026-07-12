@@ -45,6 +45,54 @@ O fluxo demo preserva o mesmo resultado público e usa providers cognitivos Fake
 
 O demo também usa a Observability Layer em memória por padrão. Eventos aceitos pelo `EventService` são validados, redigidos, recebem fingerprint SHA-256 determinístico, são persistidos em `InMemoryEventStore`, projetados para auditoria/métricas/traces/logs/alertas e só então publicados no Event Bus. A resposta pública de `/runtime/demo` permanece exatamente a mesma: `status="completed"`, recommendation `Proceed using ECOS context, reasoning, debate and governance.` e `confidence=0.91`.
 
+O demo usa uma identidade explícita `demo@ecos.local` quando não há Bearer token e `ECOS_AUTH_DEMO_ENABLED=true`. Essa identidade existe apenas para o fluxo demonstrativo local; ela carrega `user_id`, `organization_id`, papéis, permissões, método `demo`, `session_id`, timestamps de emissão/expiração e `correlation_id`. Se um Bearer token válido for enviado, o middleware usa a identidade autenticada.
+
+## Segurança local
+
+A autenticação é local, sem Auth0, Clerk, Supabase Auth, Google ou OAuth social. O backend cria um usuário local de desenvolvimento `admin@ecos.local` com senha `change-me-development-only` apenas para facilitar testes locais. Não use essa senha em produção.
+
+Configure o segredo de token por ambiente:
+
+```bash
+export ECOS_AUTH_TOKEN_SECRET='troque-por-um-segredo-local-com-32-ou-mais-caracteres'
+export ECOS_AUTH_TOKEN_TTL_MINUTES=60
+export ECOS_AUTH_ISSUER=ecos.local
+export ECOS_AUTH_AUDIENCE=ecos.api
+```
+
+Produção (`ECOS_ENVIRONMENT=production` ou `prod`) falha na inicialização se `ECOS_AUTH_TOKEN_SECRET` permanecer no valor padrão de desenvolvimento ou tiver menos de 32 caracteres. Senhas são verificadas com Argon2id via `argon2-cffi`; tokens Bearer são JWT assinados e expirável via `PyJWT`. Tokens inválidos, expirados, revogados ou adulterados retornam 401.
+
+Login local:
+
+```bash
+curl -X POST http://127.0.0.1:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@ecos.local","password":"change-me-development-only","organization_id":"<organization-id>"}'
+```
+
+Consulta do principal autenticado:
+
+```bash
+curl http://127.0.0.1:8000/security/me \
+  -H "Authorization: Bearer <access-token>"
+```
+
+`/security/me` sem credencial ou com token inválido retorna 401 com `WWW-Authenticate: Bearer`. Credencial válida sem permissão, ou tentativa de usar ID de recurso de outra organização, retorna 403. Headers de segurança (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Cache-Control`) são adicionados pela API, e payloads acima de 1 MB são rejeitados.
+
+Papéis organizacionais implementados:
+
+- `viewer`: leitura de sessões, memória, Knowledge Graph, observação e aprendizado.
+- `operator`: leitura/escrita de sessões e memória, criação de decisão e execução autorizada.
+- `manager`: operação, aprovação, governança, eventos e Knowledge Graph.
+- `executive` e `executive_board`: governança, aprovação, auditoria e configurações organizacionais.
+- `auditor`: leitura de configurações, sessões, memória, Knowledge Graph, eventos, auditoria, observação e aprendizado.
+- `admin`: administração da organização, sem privilégios globais.
+- `global_admin`: capacidade global separada e explícita.
+
+Permissões são derivadas de papel e podem ser estendidas no vínculo usuário-organização. O `organization_id` usado pelos serviços escopados vem do principal autenticado; valores enviados pelo cliente em body/query/payload não sobrescrevem a identidade.
+
+Eventos de segurança são append-only e projetados para auditoria/observability: autenticação bem-sucedida, falha de autenticação, acesso negado, tentativa cross-tenant, criação/revogação de sessão, mudança de papel/permissão e execução privilegiada. A redação central mascara authorization headers, cookies, senhas, tokens, API keys, secrets, credenciais e campos sensíveis configuráveis.
+
 Com `ECOS_MEMORY_REPOSITORY=fake`, o Container mantém `FakeContextProvider` para o runtime demo. Com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta o Context Engine real, que constrói contexto a partir da requisição da sessão, memória organizacional escopada por `organization_id` e candidatos seguros do Knowledge Graph quando disponíveis. O Context Engine não usa LLM, OpenAI, embeddings, busca web ou repository concreto do grafo; ele calcula relevância, confiança e completude de forma determinística, mantém lacunas explícitas em `missing_context` e continua responsável pela seleção final do contexto.
 
 ## Knowledge Graph local
@@ -168,11 +216,12 @@ cd backend
 export ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos
 export ECOS_SESSION_REPOSITORY=postgres
 export ECOS_MEMORY_REPOSITORY=postgres
+export ECOS_SECURITY_REPOSITORY=postgres
 uv run alembic upgrade head
 uv run uvicorn ecos.main:app --reload
 ```
 
-`ECOS_SESSION_REPOSITORY` e `ECOS_MEMORY_REPOSITORY` podem ser configurados independentemente como `fake` ou `postgres`; ambos usam `fake` por padrão. Quando memória PostgreSQL está ativa, cada consulta de contexto é restrita ao `organization_id`; falhas de memória e retornos de outra organização são erros explícitos, sem fallback silencioso.
+`ECOS_SESSION_REPOSITORY`, `ECOS_MEMORY_REPOSITORY` e `ECOS_SECURITY_REPOSITORY` podem ser configurados independentemente como `fake`/`memory` ou `postgres`; todos usam memória por padrão. Quando PostgreSQL está ativo, sessões, memórias, identidade e sessões de autenticação possuem escopo por `organization_id` e índices dedicados. Falhas de banco não fazem fallback silencioso para memória.
 
 ## Observability persistente opcional
 
@@ -209,4 +258,4 @@ cd backend
 ECOS_TEST_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos uv run pytest
 ```
 
-Esse comando habilita os testes condicionais dos repositórios PostgreSQL de sessões, memórias e Knowledge Graph. A migration `20260711_02` cria `memories` após a migration de sessões, `20260711_03` adiciona o índice de escopo organizacional para memórias, `20260711_04` cria observability e `20260711_05` cria as tabelas versionadas do Knowledge Graph; elas podem ser validadas com `alembic downgrade base` e `alembic upgrade head`.
+Esse comando habilita os testes condicionais dos repositórios PostgreSQL de sessões, memórias e Knowledge Graph. A migration `20260711_02` cria `memories` após a migration de sessões, `20260711_03` adiciona o índice de escopo organizacional para memórias, `20260711_04` cria observability, `20260711_05` cria as tabelas versionadas do Knowledge Graph, `20260711_06` cria identidade/autenticação local e `20260711_07` materializa `organization_id` em sessões; elas podem ser validadas com `alembic downgrade base` e `alembic upgrade head`.

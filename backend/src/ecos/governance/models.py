@@ -509,6 +509,7 @@ class ApprovalRequest(GovernanceModel):
     session_id: UUID
     plan_id: UUID
     correlation_id: UUID
+    requester_id: UUID | None = None
     action_scope: str
     approval_level: ApprovalLevel
     required_roles: tuple[str, ...]
