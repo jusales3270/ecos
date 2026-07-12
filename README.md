@@ -228,6 +228,45 @@ Endpoints principais:
 
 `/runtime/demo` foi preservado.
 
+## Sprint 18B — persistência operacional
+
+O fluxo operacional agora possui contrato próprio em `ecos.operational.repository`.
+A seleção é explícita por `ECOS_OPERATIONAL_REPOSITORY=memory|postgres`; produção
+recusa inicialização sem PostgreSQL. O modo `memory` é somente para desenvolvimento
+declarado e testes unitários, sem fallback silencioso quando PostgreSQL é selecionado.
+
+A migration `20260712_01_create_operational_tables.py` adiciona:
+
+- `operational_sessions`: agregado persistente versionado, com `organization_id`,
+  `status`, `correlation_id`, `approval_id`, `execution_id`, timestamps e JSON seguro
+  do estado operacional.
+- `operational_timeline_entries`: histórico append-only planejado para timeline.
+- `operational_approval_decisions`: decisões de aprovação/rejeição sem hard delete.
+- `operational_execution_attempts`: tentativas de execução sem hard delete.
+- `operational_idempotency_keys`: resultado do primeiro comando mutável escopado por
+  organização, usuário, operação e `Idempotency-Key`.
+
+As transições de sessão, recomendação, aprovação, rejeição e execução usam optimistic
+locking por `version`. Uma aprovação decidida retorna 409 em repetição não idempotente;
+execução sem aprovação permanece bloqueada; solicitante não aprova a própria solicitação.
+Com `Idempotency-Key`, criação de sessão, início do fluxo, aprovação, rejeição e início
+de execução retornam o mesmo resultado para payload idêntico e 409 para payload diferente.
+A retenção documentada das chaves é 24 horas; limpeza operacional pode ser feita com
+`scripts/cleanup-operational-retention.sh`.
+
+Reconciliação administrativa está disponível em `POST /api/v1/admin/reconcile` para
+administradores organizacionais. Ela localiza estados interrompidos, registra timeline,
+não aprova automaticamente e não inicia execução. Estados `processing`/`executing` são
+marcados para revisão/falha segura; `waiting_approval`/`approved` são preservados para
+retomada humana.
+
+Não foi criada transactional outbox adicional neste sprint. A arquitetura atual já
+centraliza Events/Audit/Observability no `EventService`; o novo repositório operacional
+persiste o estado antes de publicar eventos derivados. A lacuna conhecida é que, sem uma
+outbox, uma falha entre commit operacional e publicação pode exigir reconciliação/admin
+replay manual. A escolha evita complexidade de fila local enquanto os eventos continuam
+append-only no Event Store configurado.
+
 ## Health, readiness e métricas
 
 - `/health/live`: liveness sem dependência externa.
@@ -238,6 +277,21 @@ Endpoints principais:
 ## Docker e CI
 
 A imagem final integra frontend compilado e API, roda com usuário não-root e não inclui toolchain Node. `docker-compose.yml` define PostgreSQL, serviço separado de migrations e aplicação. O workflow `.github/workflows/ci.yml` executa lint, format check, testes, build frontend, validação de migrations, `docker compose config` e build da imagem.
+
+## Backup, restore e retenção
+
+Scripts operacionais simples ficam em `scripts/`:
+
+- `backup-postgres.sh`: executa `pg_dump --format=custom` em `ECOS_DATABASE_URL`,
+  valida o dump com `pg_restore --list` e grava em `ECOS_BACKUP_DIR` ou `./backups`.
+- `restore-postgres.sh`: restaura `ECOS_RESTORE_FILE` com `pg_restore --clean --if-exists`.
+- `cleanup-operational-retention.sh`: remove chaves de idempotência expiradas.
+
+Disaster recovery local: parar a aplicação, restaurar backup em banco limpo, aplicar
+`uv run alembic upgrade head`, iniciar a aplicação e validar `/health/ready`,
+`/health/version`, login e uma consulta operacional. Rollback de migration deve ser
+testado em banco descartável com `uv run alembic downgrade -1`; dados auditáveis,
+aprovações, execuções e aprendizados validados não devem ser limpos sem política explícita.
 
 ### Instalar dependências
 

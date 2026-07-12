@@ -10,10 +10,12 @@ import type {
 
 export class ApiError extends Error {
   status: number;
+  retryAfter: string | null;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, retryAfter: string | null = null) {
     super(message);
     this.status = status;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -49,10 +51,23 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     } catch {
       message = response.statusText;
     }
-    throw new ApiError(response.status, message);
+    if (response.status === 409) {
+      message = message || "Conflito de estado. Atualize e tente novamente.";
+    }
+    if (response.status === 429) {
+      const retry = response.headers.get("Retry-After");
+      message = retry
+        ? `Limite atingido. Tente novamente em ${retry}s.`
+        : "Limite atingido. Tente novamente mais tarde.";
+    }
+    throw new ApiError(response.status, message, response.headers.get("Retry-After"));
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+function idempotencyKey(action: string): string {
+  return `${action}:${crypto.randomUUID()}`;
 }
 
 export const api = {
@@ -71,25 +86,36 @@ export const api = {
   createSession: (objective: string, description: string) =>
     request<OperationalSession>("/api/v1/sessions", {
       method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey("session.create") },
       body: JSON.stringify({ objective, description })
     }),
   session: (id: string) => request<OperationalSession>(`/api/v1/sessions/${id}`),
   startCognition: (id: string) =>
-    request<OperationalSession>(`/api/v1/sessions/${id}/start`, { method: "POST" }),
+    request<OperationalSession>(`/api/v1/sessions/${id}/start`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey("session.start") }
+    }),
   approvals: (status = "") =>
     request<Approval[]>(
       `/api/v1/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`
     ),
   approve: (id: string) =>
-    request<Approval>(`/api/v1/approvals/${id}/approve`, { method: "POST" }),
+    request<Approval>(`/api/v1/approvals/${id}/approve`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey("approval.approve") }
+    }),
   reject: (id: string, reason: string) =>
     request<Approval>(`/api/v1/approvals/${id}/reject`, {
       method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey("approval.reject") },
       body: JSON.stringify({ reason })
     }),
   executions: () => request<Execution[]>("/api/v1/executions"),
   startExecution: (id: string) =>
-    request<Execution>(`/api/v1/executions/${id}/start`, { method: "POST" }),
+    request<Execution>(`/api/v1/executions/${id}/start`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey("execution.start") }
+    }),
   knowledge: (query: string) =>
     request<KnowledgeResult[]>(
       `/api/v1/knowledge/search?q=${encodeURIComponent(query)}`
@@ -99,5 +125,10 @@ export const api = {
   members: () => request<Array<Record<string, unknown>>>("/api/v1/admin/members"),
   roles: () => request<string[]>("/api/v1/admin/roles"),
   permissions: () => request<string[]>("/api/v1/admin/permissions"),
-  orgSettings: () => request<Record<string, unknown>>("/api/v1/admin/settings")
+  orgSettings: () => request<Record<string, unknown>>("/api/v1/admin/settings"),
+  reconcile: () =>
+    request<Record<string, unknown>>("/api/v1/admin/reconcile", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey("admin.reconcile") }
+    })
 };

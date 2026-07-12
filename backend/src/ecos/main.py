@@ -93,8 +93,10 @@ app.include_router(api_v1_router)
 @app.exception_handler(EcosError)
 async def ecos_error_handler(request: Request, exc: EcosError) -> JSONResponse:
     """Return standardized responses for ECOS domain/application errors."""
+    del request
+    status_code = 409 if "CONFLICT" in exc.code else 400
     return JSONResponse(
-        status_code=400,
+        status_code=status_code,
         content={
             "error": {
                 "code": exc.code,

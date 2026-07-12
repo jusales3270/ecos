@@ -48,6 +48,10 @@ class Settings(BaseSettings):
         default="memory",
         description="Identity and authentication repository implementation.",
     )
+    operational_repository: Literal["memory", "postgres"] = Field(
+        default="memory",
+        description="Operational workflow repository implementation.",
+    )
     auth_token_secret: str = Field(
         default="development-only-auth-secret-change-me-000000",
         description="Local token signing secret supplied through secure config.",
@@ -151,6 +155,7 @@ class Settings(BaseSettings):
             self.session_repository != "postgres"
             or self.security_repository != "postgres"
             or self.observability_repository != "postgres"
+            or self.operational_repository != "postgres"
         ):
             msg = "PostgreSQL repositories must be explicit in production"
             raise ValueError(msg)

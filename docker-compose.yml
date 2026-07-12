@@ -27,6 +27,7 @@ services:
       ECOS_OBSERVABILITY_REPOSITORY: postgres
       ECOS_KNOWLEDGE_REPOSITORY: postgres
       ECOS_SECURITY_REPOSITORY: postgres
+      ECOS_OPERATIONAL_REPOSITORY: postgres
       ECOS_AUTH_TOKEN_SECRET: ${ECOS_AUTH_TOKEN_SECRET:-development-only-auth-secret-change-me-000000}
       ECOS_AUTH_DEMO_ENABLED: ${ECOS_AUTH_DEMO_ENABLED:-true}
       ECOS_DEMO_SEED_ENABLED: ${ECOS_DEMO_SEED_ENABLED:-true}
@@ -36,6 +37,7 @@ services:
     networks:
       - ecos_internal
     restart: "no"
+    init: true
 
   app:
     build:
@@ -48,6 +50,7 @@ services:
       ECOS_OBSERVABILITY_REPOSITORY: postgres
       ECOS_KNOWLEDGE_REPOSITORY: postgres
       ECOS_SECURITY_REPOSITORY: postgres
+      ECOS_OPERATIONAL_REPOSITORY: postgres
       ECOS_AUTH_TOKEN_SECRET: ${ECOS_AUTH_TOKEN_SECRET:-development-only-auth-secret-change-me-000000}
       ECOS_AUTH_DEMO_ENABLED: ${ECOS_AUTH_DEMO_ENABLED:-true}
       ECOS_DEMO_SEED_ENABLED: ${ECOS_DEMO_SEED_ENABLED:-true}
@@ -71,6 +74,12 @@ services:
     networks:
       - ecos_internal
     restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    stop_grace_period: 30s
+    pids_limit: 256
 
 volumes:
   postgres_data:
