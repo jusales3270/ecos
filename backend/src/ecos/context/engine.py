@@ -11,6 +11,8 @@ from uuid import UUID, uuid4
 from ecos.context.models import (
     ContextBuildRequest,
     ContextElement,
+    ContextGraph,
+    ContextKnowledgeReference,
     ContextMemoryReference,
     ContextObject,
     ContextPriority,
@@ -29,6 +31,21 @@ from ecos.core.exceptions import (
 from ecos.events import Event, EventMetadata, EventPriority, EventService, EventType
 from ecos.memory import MemoryObject, MemoryRepository, MemoryType
 
+try:
+    from ecos.knowledge import (
+        KnowledgeContextExpander,
+        KnowledgeContextExpansion,
+        KnowledgeContextExpansionRequest,
+        KnowledgeGraphService,
+        SemanticQuery,
+    )
+except ImportError:  # pragma: no cover - optional import guard for partial installs
+    KnowledgeContextExpander = object  # type: ignore[misc,assignment]
+    KnowledgeContextExpansion = object  # type: ignore[misc,assignment]
+    KnowledgeContextExpansionRequest = object  # type: ignore[misc,assignment]
+    KnowledgeGraphService = object  # type: ignore[misc,assignment]
+    SemanticQuery = object  # type: ignore[misc,assignment]
+
 Clock = Callable[[], datetime]
 IdGenerator = Callable[[], UUID]
 
@@ -46,11 +63,15 @@ class ContextEngine(ContextProvider):
         memory_repository: MemoryRepository,
         *,
         event_service: EventService | None = None,
+        knowledge_graph_service: KnowledgeGraphService | None = None,
+        context_expander: KnowledgeContextExpander | None = None,
         clock: Clock = utc_clock,
         id_generator: IdGenerator = uuid4,
     ) -> None:
         self._memory_repository = memory_repository
         self._event_service = event_service
+        self._knowledge_graph_service = knowledge_graph_service
+        self._context_expander = context_expander
         self._clock = clock
         self._id_generator = id_generator
         self._version = 0
@@ -77,7 +98,19 @@ class ContextEngine(ContextProvider):
 
         self._validate_memory_scope(request, candidates)
         selected = self._select_memories(request, candidates)
+        graph_expansion = self._expand_knowledge(request, selected)
         missing_context = self._detect_missing_context(request, selected)
+        if (
+            graph_expansion is not None
+            and "knowledge_graph_empty" in graph_expansion.warnings
+        ):
+            missing_context.append(
+                self._gap(
+                    "knowledge_graph",
+                    "connected_context",
+                    MissingContextSeverity.LOW,
+                )
+            )
         confidence = self._calculate_confidence(request, selected, missing_context)
         completeness = self._calculate_completeness(request, selected, missing_context)
         if missing_context:
@@ -98,6 +131,7 @@ class ContextEngine(ContextProvider):
         context = self._assemble_context(
             request,
             selected,
+            graph_expansion,
             missing_context,
             confidence,
             completeness,
@@ -111,6 +145,9 @@ class ContextEngine(ContextProvider):
             {
                 "memories_evaluated": len(candidates),
                 "memories_selected": len(selected),
+                "knowledge_entities_selected": 0
+                if graph_expansion is None
+                else len(graph_expansion.selected_entities),
                 "policy_count": len(request.policies),
                 "constraint_count": len(request.constraints),
                 "missing_count": len(missing_context),
@@ -284,6 +321,7 @@ class ContextEngine(ContextProvider):
         self,
         request: ContextBuildRequest,
         selected: list[tuple[MemoryObject, float]],
+        graph_expansion: KnowledgeContextExpansion | None,
         missing_context: list[MissingContextItem],
         confidence: float,
         completeness: float,
@@ -308,6 +346,13 @@ class ContextEngine(ContextProvider):
             for memory, _score in selected
             if memory.confidence >= 0.5
         ]
+        knowledge_references = self._knowledge_references(graph_expansion)
+        evidence.extend(
+            reference
+            for item in knowledge_references
+            for reference in item.evidence_references
+            if reference not in evidence
+        )
         summary = self._summary(request, selected, missing_context)
         return ContextObject(
             id=self._id_generator(),
@@ -345,6 +390,8 @@ class ContextEngine(ContextProvider):
             resources=list(request.resources),
             relevant_entities=list(request.relevant_entities),
             memory_references=memory_references,
+            knowledge_references=knowledge_references,
+            context_graph=self._context_graph(request, graph_expansion),
             evidence=evidence,
             previous_decisions=[str(item) for item in request.previous_session_ids],
             missing_context=missing_context,
@@ -357,6 +404,9 @@ class ContextEngine(ContextProvider):
                 "memory_evaluated_count": len(selected),
                 "policy_count": len(request.policies),
                 "constraint_count": len(request.constraints),
+                "knowledge_entity_count": 0
+                if graph_expansion is None
+                else len(graph_expansion.selected_entities),
             },
         )
 
@@ -560,6 +610,102 @@ class ContextEngine(ContextProvider):
             f"Context for '{request.objective.title}' includes {len(selected)} "
             f"memory references, {len(request.policies)} policies, "
             f"{len(request.constraints)} constraints, and {len(gaps)} gaps."
+        )
+
+    def _expand_knowledge(
+        self,
+        request: ContextBuildRequest,
+        selected: list[tuple[MemoryObject, float]],
+    ) -> KnowledgeContextExpansion | None:
+        if self._context_expander is None or self._knowledge_graph_service is None:
+            return None
+        seed_ids = tuple(
+            entity
+            for entity in request.relevant_entities
+            if ":" in entity and entity.strip()
+        )
+        query_text = " ".join(
+            [
+                request.objective.title,
+                request.objective.description or "",
+                " ".join(request.relevant_entities),
+            ]
+        ).strip()
+        semantic_query = SemanticQuery(
+            organization_id=request.organization_id,
+            text=query_text,
+            source_entity_ids=seed_ids,
+            max_results=min(request.memory_limit, 10),
+            max_depth=2,
+        )
+        return self._context_expander.expand(
+            KnowledgeContextExpansionRequest(
+                organization_id=request.organization_id,
+                session_id=request.session_id,
+                objective_reference=f"objective:{request.objective.id}",
+                seed_entity_ids=seed_ids,
+                semantic_query=semantic_query,
+                relevant_memory_references=tuple(
+                    f"memory:{memory.id}" for memory, _score in selected
+                ),
+                max_depth=2,
+                max_entities=min(request.memory_limit * 2, 25),
+                min_confidence=0.0,
+                context_budget=50,
+                correlation_id=request.correlation_id,
+            )
+        )
+
+    @staticmethod
+    def _knowledge_references(
+        graph_expansion: KnowledgeContextExpansion | None,
+    ) -> list[ContextKnowledgeReference]:
+        if graph_expansion is None:
+            return []
+        return [
+            ContextKnowledgeReference(
+                entity_id=entity.entity_id,
+                organization_id=entity.organization_id,
+                entity_type=entity.entity_type.value,
+                name=entity.name,
+                confidence=entity.confidence,
+                importance=entity.importance,
+                evidence_references=list(entity.evidence_references),
+            )
+            for entity in graph_expansion.selected_entities
+        ]
+
+    @staticmethod
+    def _context_graph(
+        request: ContextBuildRequest,
+        graph_expansion: KnowledgeContextExpansion | None,
+    ) -> ContextGraph | None:
+        if graph_expansion is None:
+            return None
+        return ContextGraph(
+            organization_id=request.organization_id,
+            session_id=request.session_id,
+            seed_entities=list(graph_expansion.expanded_entity_ids),
+            selected_entities=[
+                entity.entity_id for entity in graph_expansion.selected_entities
+            ],
+            selected_relationships=[
+                relationship.relationship_id
+                for relationship in graph_expansion.selected_relationships
+            ],
+            paths=[path.path_id for path in graph_expansion.graph_paths],
+            expansion_depth=max(
+                (path.depth for path in graph_expansion.graph_paths), default=0
+            ),
+            entity_count=len(graph_expansion.selected_entities),
+            relationship_count=len(graph_expansion.selected_relationships),
+            confidence=graph_expansion.graph_confidence,
+            completeness_signal=graph_expansion.completeness_signal,
+            truncated=graph_expansion.truncation_applied,
+            reason_codes=list(graph_expansion.reason_codes),
+            safe_metadata={
+                "warnings": ",".join(graph_expansion.warnings),
+            },
         )
 
     def _publish(

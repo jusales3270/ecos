@@ -45,7 +45,32 @@ O fluxo demo preserva o mesmo resultado público e usa providers cognitivos Fake
 
 O demo também usa a Observability Layer em memória por padrão. Eventos aceitos pelo `EventService` são validados, redigidos, recebem fingerprint SHA-256 determinístico, são persistidos em `InMemoryEventStore`, projetados para auditoria/métricas/traces/logs/alertas e só então publicados no Event Bus. A resposta pública de `/runtime/demo` permanece exatamente a mesma: `status="completed"`, recommendation `Proceed using ECOS context, reasoning, debate and governance.` e `confidence=0.91`.
 
-Com `ECOS_MEMORY_REPOSITORY=fake`, o Container mantém `FakeContextProvider` para o runtime demo. Com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta o Context Engine real, que constrói contexto somente a partir da requisição da sessão e da memória organizacional escopada por `organization_id`. O Context Engine não usa LLM, OpenAI, embeddings, pgvector, busca web ou Knowledge Graph; ele calcula relevância, confiança e completude de forma determinística e mantém lacunas explícitas em `missing_context`.
+Com `ECOS_MEMORY_REPOSITORY=fake`, o Container mantém `FakeContextProvider` para o runtime demo. Com `ECOS_MEMORY_REPOSITORY=postgres`, o Container injeta o Context Engine real, que constrói contexto a partir da requisição da sessão, memória organizacional escopada por `organization_id` e candidatos seguros do Knowledge Graph quando disponíveis. O Context Engine não usa LLM, OpenAI, embeddings, busca web ou repository concreto do grafo; ele calcula relevância, confiança e completude de forma determinística, mantém lacunas explícitas em `missing_context` e continua responsável pela seleção final do contexto.
+
+## Knowledge Graph local
+
+O Knowledge Graph está em `backend/src/ecos/knowledge/`. Ele armazena entidades e relacionamentos direcionais versionados, preserva histórico e proveniência por referências seguras e não armazena documentos brutos, binários, recommendations integrais, reasoning integral, políticas integrais, segredos ou cadeia privada de pensamento. O grafo não raciocina, não recomenda, não decide, não aprova, não executa ações e não altera Memory, LearningResult, Session ou eventos históricos.
+
+O modo padrão é memória:
+
+```bash
+export ECOS_KNOWLEDGE_REPOSITORY=memory
+```
+
+Para usar PostgreSQL, selecione explicitamente o mesmo banco da aplicação e aplique a migration `20260711_05_create_knowledge_graph_tables.py`:
+
+```bash
+cd backend
+export ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos
+export ECOS_KNOWLEDGE_REPOSITORY=postgres
+uv run alembic upgrade head
+```
+
+Não há fallback silencioso: se PostgreSQL for selecionado e estiver indisponível, o health do repository reflete a falha. A suíte padrão usa memória, não exige PostgreSQL e não realiza chamadas externas.
+
+A recuperação semântica do sprint é estruturada e lexical. Ela usa nome normalizado, aliases, tags, tipo, atributos seguros, descrição segura, relacionamentos, proximidade no grafo, importância, recência e confiança. Não usa OpenAI, `AIProvider`, LLM, embeddings, pgvector, Neo4j, banco vetorial, machine learning, busca externa ou serviços externos. O ranking usa pesos determinísticos: lexical/estruturado `0.35`, proximidade no grafo `0.20`, relacionamento `0.10`, importância `0.10`, recência `0.10`, confiança `0.10` e relevância organizacional `0.05`.
+
+Travessia, dependency chain, impact chain e subgrafo exigem limites de profundidade/nós e são sempre escopados por `organization_id`. Ciclos são permitidos para relações como `relates_to`; ciclos em `depends_on` e `replaces` são inválidos. O `GraphIntegrityService` valida relacionamentos quebrados, duplicidade ativa, conflitos de fingerprint, ciclos inválidos e versões sem modificar o grafo.
 
 ## Cognitive Planner local
 
@@ -91,7 +116,7 @@ Artifacts são referências tipadas, não binários no resultado. Métricas, log
 
 O Container registra `ObservationEngine` real com `InMemoryMeasurementProvider`, `InMemoryFeedbackProvider`, idempotência em memória, `EventService`, relógio UTC e gerador de IDs injetados. Observation mede fatos organizacionais fornecidos ao request: compara `ExpectedOutcome` com `Measurement`, calcula desvios, anomalias determinísticas, quality e score normalizado. Ausência de métrica obrigatória gera `inconclusive` ou falha de expectativa, nunca sucesso artificial.
 
-Observation Engine e Observability Layer são separados. Observation mede resultados organizacionais declarados; Observability mede funcionamento técnico e cognitivo do E.C.O.S. A Observability Layer persiste eventos e projeções, mas não recalcula outcome score, quality, LearningCandidate, memória ou causalidade. Dashboards, tracing vendor, polling, jobs em background, notificações externas, OII, Knowledge Graph, autenticação e RBAC não foram implementados.
+Observation Engine e Observability Layer são separados. Observation mede resultados organizacionais declarados; Observability mede funcionamento técnico e cognitivo do E.C.O.S. A Observability Layer persiste eventos e projeções, mas não recalcula outcome score, quality, LearningCandidate, memória ou causalidade. Dashboards, tracing vendor, polling, jobs em background, notificações externas, OII, autenticação e RBAC não foram implementados.
 
 O `LearningService` existente foi preservado e estendido para receber `ObservationResult` por contrato. Ele cria `LearningCandidate` somente a partir de fatos observados, preserva correlação como correlação, exige evidência e qualidade mínimas, aplica política de revisão humana, detecta padrões apenas com recorrência configurada e grava no Memory Engine apenas propostas validadas. Confiança é calibrada por proposta; não há sobrescrita histórica.
 
@@ -184,4 +209,4 @@ cd backend
 ECOS_TEST_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos uv run pytest
 ```
 
-Esse comando habilita os testes condicionais dos repositórios PostgreSQL de sessões e memórias. A migration `20260711_02` cria `memories` após a migration de sessões, e `20260711_03` adiciona o índice de escopo organizacional para memórias; elas podem ser validadas com `alembic downgrade base` e `alembic upgrade head`.
+Esse comando habilita os testes condicionais dos repositórios PostgreSQL de sessões, memórias e Knowledge Graph. A migration `20260711_02` cria `memories` após a migration de sessões, `20260711_03` adiciona o índice de escopo organizacional para memórias, `20260711_04` cria observability e `20260711_05` cria as tabelas versionadas do Knowledge Graph; elas podem ser validadas com `alembic downgrade base` e `alembic upgrade head`.

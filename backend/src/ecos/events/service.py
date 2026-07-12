@@ -36,6 +36,16 @@ class EventService:
                 raise ProjectorFailedError(f"duplicate projector: {projector_id}")
             projector_ids.add(projector_id)
 
+    def register_projector(self, projector: object) -> None:
+        """Register an additional projector while rejecting duplicate identities."""
+        projector_id = str(getattr(projector, "projector_id", projector))
+        existing = {
+            str(getattr(item, "projector_id", item)) for item in self._projectors
+        }
+        if projector_id in existing:
+            raise ProjectorFailedError(f"duplicate projector: {projector_id}")
+        self._projectors = (*self._projectors, projector)
+
     def publish(self, event: Event) -> EventEnvelope:
         """Persist an event before publishing it through the bus."""
         safe_event = self._safe_event(event)
