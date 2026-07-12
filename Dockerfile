@@ -12,7 +12,7 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-dev
 COPY backend/ ./
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 ARG ECOS_VERSION=0.1.0-rc.1
 ARG ECOS_BUILD_COMMIT_SHA=
 ARG ECOS_BUILD_DATE=
