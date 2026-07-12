@@ -1,50 +1,14 @@
-# Operating system files
 .DS_Store
-Thumbs.db
-
-# Editor and IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Environment and secrets
 .env
-**/.env
-.env.*
-**/.env.*
-!.env.example
-!**/.env.example
-*.pem
-*.key
-
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-.venv/
-venv/
-.envrc
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Node / Next.js
-node_modules/
-.next/
-out/
-dist/
-build/
+backend/.env
+backend/.venv/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/**/__pycache__/
+backend/**/*.pyc
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
 coverage/
-*.tsbuildinfo
-
-# Logs
 *.log
-logs/
-
-# Docker and local runtime data
-.docker/
-postgres-data/
-redis-data/

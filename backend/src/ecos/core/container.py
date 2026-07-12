@@ -66,6 +66,7 @@ from ecos.observation import (
     ObservationConfig,
     ObservationEngine,
 )
+from ecos.operational import OperationalService
 from ecos.orchestrator import (
     OrchestrationConfig,
     OrchestrationMode,
@@ -472,6 +473,14 @@ class Container:
             ai_service=self.ai_service,
         )
         self.runtime_engine = RuntimeEngine(self.runtime_pipeline)
+        self.operational_service = OperationalService(
+            security_service=self.security_service,
+            security_repository=self.security_repository,
+            event_service=self.event_service,
+            knowledge_graph_service=self.knowledge_graph_service,
+            demo_seed_enabled=self.settings.demo_seed_enabled,
+            environment=self.settings.environment,
+        )
 
     def health(self) -> dict[str, Any]:
         """Return container, provider and runtime health information."""

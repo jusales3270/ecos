@@ -31,6 +31,10 @@ class SecurityRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_users(self) -> list[UserIdentity]:
+        raise NotImplementedError
+
+    @abstractmethod
     def add_organization(
         self, organization: OrganizationIdentity
     ) -> OrganizationIdentity:
@@ -38,6 +42,10 @@ class SecurityRepository(ABC):
 
     @abstractmethod
     def get_organization(self, organization_id: UUID) -> OrganizationIdentity | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_organizations(self) -> list[OrganizationIdentity]:
         raise NotImplementedError
 
     @abstractmethod
@@ -50,6 +58,15 @@ class SecurityRepository(ABC):
     def get_membership(
         self, user_id: UUID, organization_id: UUID
     ) -> UserOrganizationMembership | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_memberships(
+        self,
+        *,
+        user_id: UUID | None = None,
+        organization_id: UUID | None = None,
+    ) -> list[UserOrganizationMembership]:
         raise NotImplementedError
 
     @abstractmethod
@@ -105,6 +122,10 @@ class InMemorySecurityRepository(SecurityRepository):
             user_id = self._users_by_email.get(email.strip().lower())
             return None if user_id is None else self._users.get(user_id)
 
+    def list_users(self) -> list[UserIdentity]:
+        with self._lock:
+            return list(self._users.values())
+
     def add_organization(
         self, organization: OrganizationIdentity
     ) -> OrganizationIdentity:
@@ -115,6 +136,10 @@ class InMemorySecurityRepository(SecurityRepository):
     def get_organization(self, organization_id: UUID) -> OrganizationIdentity | None:
         with self._lock:
             return self._organizations.get(organization_id)
+
+    def list_organizations(self) -> list[OrganizationIdentity]:
+        with self._lock:
+            return list(self._organizations.values())
 
     def add_membership(
         self, membership: UserOrganizationMembership
@@ -130,6 +155,22 @@ class InMemorySecurityRepository(SecurityRepository):
     ) -> UserOrganizationMembership | None:
         with self._lock:
             return self._memberships.get((user_id, organization_id))
+
+    def list_memberships(
+        self,
+        *,
+        user_id: UUID | None = None,
+        organization_id: UUID | None = None,
+    ) -> list[UserOrganizationMembership]:
+        with self._lock:
+            memberships = list(self._memberships.values())
+        if user_id is not None:
+            memberships = [item for item in memberships if item.user_id == user_id]
+        if organization_id is not None:
+            memberships = [
+                item for item in memberships if item.organization_id == organization_id
+            ]
+        return memberships
 
     def set_password_credential(
         self, credential: PasswordCredential

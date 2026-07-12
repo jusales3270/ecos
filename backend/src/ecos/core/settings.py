@@ -71,6 +71,33 @@ class Settings(BaseSettings):
         default=True,
         description="Allow explicit demo identity for /runtime/demo.",
     )
+    demo_seed_enabled: bool = Field(
+        default=True,
+        description="Create explicit local/E2E demo identities and data.",
+    )
+    web_cookie_name: str = Field(
+        default="ecos_session",
+        min_length=1,
+        description="HttpOnly browser session cookie name.",
+    )
+    csrf_cookie_name: str = Field(
+        default="ecos_csrf",
+        min_length=1,
+        description="Readable CSRF cookie name for browser clients.",
+    )
+    csrf_header_name: str = Field(
+        default="X-CSRF-Token",
+        min_length=1,
+        description="Header required for mutable cookie-authenticated requests.",
+    )
+    frontend_static_dir: str = Field(
+        default="frontend/dist",
+        description="Compiled frontend directory served by the backend.",
+    )
+    metrics_enabled: bool = Field(
+        default=True,
+        description="Expose operational metrics when enabled.",
+    )
     ai_provider: Literal["fake", "openai"] = Field(
         default="fake",
         description="AI provider implementation used by the application.",
@@ -114,6 +141,18 @@ class Settings(BaseSettings):
             or len(self.auth_token_secret) < 32
         ):
             msg = "ECOS_AUTH_TOKEN_SECRET must be securely configured in production"
+            raise ValueError(msg)
+        if self.environment.lower() in {"production", "prod"} and (
+            self.auth_demo_enabled or self.demo_seed_enabled
+        ):
+            msg = "demo authentication and seed data must be disabled in production"
+            raise ValueError(msg)
+        if self.environment.lower() in {"production", "prod"} and (
+            self.session_repository != "postgres"
+            or self.security_repository != "postgres"
+            or self.observability_repository != "postgres"
+        ):
+            msg = "PostgreSQL repositories must be explicit in production"
             raise ValueError(msg)
         return self
 

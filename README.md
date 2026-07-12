@@ -4,13 +4,13 @@ ECOS (Enterprise Cognitive Operating System) é uma plataforma voltada a ampliar
 
 O objetivo do ECOS é servir como uma base estruturada para sistemas cognitivos empresariais capazes de organizar conhecimento, apoiar decisões, coordenar agentes especializados, avaliar alternativas e transformar aprendizado operacional em melhoria contínua.
 
-## Stack inicial
+## Stack operacional
 
 - **Backend:** Python + FastAPI
 - **Banco:** PostgreSQL opcional
 - **Cache:** Redis
-- **Frontend:** Next.js
-- **Infra local:** Docker Compose
+- **Frontend:** React + TypeScript + Vite + React Router
+- **Infra local:** Docker Compose com PostgreSQL, migrations e aplicação
 
 ## Estrutura inicial do repositório
 
@@ -193,7 +193,51 @@ Learning não explica causa sem evidência declarada, não sobrescreve confianç
 
 ## Backend
 
-O backend inicial do ECOS usa Python 3.12, FastAPI, pydantic-settings, pytest, Ruff e uv para gerenciamento de dependências. Para execução local com Docker Compose, PostgreSQL, Redis, pgAdmin e backend, consulte `docs/local-development.md`.
+O backend usa Python 3.12, FastAPI, pydantic-settings, pytest, Ruff e uv. A interface operacional usa React, TypeScript, Vite e CSS próprio. Para execução local, Docker, credenciais demo e validação E2E, consulte `docs/local-development.md`.
+
+## Interface operacional
+
+O Sprint 18A adiciona a primeira interface operacional real em `frontend/`. Ela consome exclusivamente `/api/v1`, não acessa banco de dados e não contém lógica cognitiva. As áreas implementadas são login, visão geral, sessões cognitivas, aprovações, execuções, Knowledge Graph, auditoria/observabilidade e administração organizacional.
+
+Autenticação de navegador usa cookie HttpOnly (`ECOS_WEB_COOKIE_NAME`) e proteção CSRF (`ECOS_CSRF_COOKIE_NAME` + `ECOS_CSRF_HEADER_NAME`) para operações mutáveis. O suporte a Bearer token existente permanece para clientes programáticos. Produção recusa inicialização com demo habilitado, segredo fraco ou repositórios críticos fora do PostgreSQL.
+
+Credenciais demo locais:
+
+- `operator@demo.ecos.local` / `operator-demo-password`
+- `approver@demo.ecos.local` / `approver-demo-password`
+- `auditor@demo.ecos.local` / `auditor-demo-password`
+- `admin@demo.ecos.local` / `admin-demo-password`
+- `operator@tenant-b.ecos.local` / `tenant-b-demo-password`
+
+Esses dados são criados apenas quando `ECOS_DEMO_SEED_ENABLED=true` fora de produção.
+
+## API operacional versionada
+
+Endpoints principais:
+
+- `/api/v1/auth/login`, `/api/v1/auth/logout`, `/api/v1/auth/me`
+- `/api/v1/organization`, `/api/v1/overview`
+- `/api/v1/sessions`, `/api/v1/sessions/{id}`, `/api/v1/sessions/{id}/start`
+- `/api/v1/recommendations/{session_id}`
+- `/api/v1/approvals`, `/api/v1/approvals/{id}/approve`, `/api/v1/approvals/{id}/reject`
+- `/api/v1/executions`, `/api/v1/executions/{id}/start`
+- `/api/v1/observations`, `/api/v1/learning`
+- `/api/v1/knowledge/search`, `/api/v1/knowledge/entities/{entity_id}`
+- `/api/v1/events`, `/api/v1/audit`, `/api/v1/metrics`, `/api/v1/health/components`
+- `/api/v1/admin/members`, `/api/v1/admin/roles`, `/api/v1/admin/permissions`, `/api/v1/admin/settings`
+
+`/runtime/demo` foi preservado.
+
+## Health, readiness e métricas
+
+- `/health/live`: liveness sem dependência externa.
+- `/health/ready`: readiness das dependências configuradas.
+- `/health/version`: versão, serviço e ambiente.
+- `/metrics`: métricas operacionais em texto compatível com coleta simples, sem dados pessoais nas labels.
+
+## Docker e CI
+
+A imagem final integra frontend compilado e API, roda com usuário não-root e não inclui toolchain Node. `docker-compose.yml` define PostgreSQL, serviço separado de migrations e aplicação. O workflow `.github/workflows/ci.yml` executa lint, format check, testes, build frontend, validação de migrations, `docker compose config` e build da imagem.
 
 ### Instalar dependências
 

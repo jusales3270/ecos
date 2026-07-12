@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -574,7 +575,7 @@ class PostgresObservabilityRepository(ObservabilityRepository):
                 organization_id=UUID(payload["organization_id"]),
                 source_event_id=UUID(payload["source_event_id"]),
                 metric_name=payload["metric_name"],
-                occurred_at=payload["occurred_at"],
+                occurred_at=_datetime(payload["occurred_at"]),
                 value=payload["value"],
                 record_json=payload,
             )
@@ -582,7 +583,7 @@ class PostgresObservabilityRepository(ObservabilityRepository):
             return StructuredLogRecordRow(
                 log_id=UUID(payload["log_id"]),
                 organization_id=UUID(payload["organization_id"]),
-                timestamp=payload["timestamp"],
+                timestamp=_datetime(payload["timestamp"]),
                 severity=payload["severity"],
                 component=payload["component"],
                 record_json=payload,
@@ -609,7 +610,15 @@ class PostgresObservabilityRepository(ObservabilityRepository):
         return HealthSnapshotRow(
             health_id=UUID(payload["health_id"]),
             component=payload["component"],
-            checked_at=payload["checked_at"],
+            checked_at=_datetime(payload["checked_at"]),
             status=payload["status"],
             record_json=payload,
         )
+
+
+def _datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    raise TypeError("expected datetime-compatible value")
