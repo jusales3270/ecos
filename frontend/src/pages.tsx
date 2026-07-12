@@ -255,8 +255,8 @@ export function ApprovalsPage() {
           <p>Correlation ID: <code>{item.correlation_id}</code></p>
           <ul>{item.plan.map((step) => <li key={step}>{step}</li>)}</ul>
           <div className="actions">
-            <button onClick={() => void decide(item.approval_id, true)}>Aprovar</button>
-            <button className="secondary" onClick={() => void decide(item.approval_id, false)}>Rejeitar</button>
+            <button disabled={item.status !== "pending"} onClick={() => void decide(item.approval_id, true)}>Aprovar</button>
+            <button disabled={item.status !== "pending"} className="secondary" onClick={() => void decide(item.approval_id, false)}>Rejeitar</button>
           </div>
         </Panel>
       ))}
@@ -344,8 +344,14 @@ export function AdminPage() {
     () => api.members(),
     []
   );
+  const [reconcileResult, setReconcileResult] = useState<string | null>(null);
+  async function reconcile() {
+    const result = await api.reconcile();
+    setReconcileResult(JSON.stringify(result));
+  }
   return (
-    <Page title="Administração Organizacional">
+    <Page title="Administração Organizacional" actions={<button onClick={() => void reconcile()}>Reconciliar</button>}>
+      {reconcileResult ? <div className="notice">{reconcileResult}</div> : null}
       {forbidden ? <div className="error">Acesso negado.</div> : null}
       {loading ? <p>Carregando...</p> : null}
       {error && !forbidden ? <div className="error">{error}</div> : null}

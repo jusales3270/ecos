@@ -310,11 +310,54 @@ export ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos
 export ECOS_SESSION_REPOSITORY=postgres
 export ECOS_MEMORY_REPOSITORY=postgres
 export ECOS_SECURITY_REPOSITORY=postgres
+export ECOS_OPERATIONAL_REPOSITORY=postgres
 uv run alembic upgrade head
 uv run uvicorn ecos.main:app --reload
 ```
 
-`ECOS_SESSION_REPOSITORY`, `ECOS_MEMORY_REPOSITORY` e `ECOS_SECURITY_REPOSITORY` podem ser configurados independentemente como `fake`/`memory` ou `postgres`; todos usam memória por padrão. Quando PostgreSQL está ativo, sessões, memórias, identidade e sessões de autenticação possuem escopo por `organization_id` e índices dedicados. Falhas de banco não fazem fallback silencioso para memória.
+`ECOS_SESSION_REPOSITORY`, `ECOS_MEMORY_REPOSITORY`, `ECOS_SECURITY_REPOSITORY` e `ECOS_OPERATIONAL_REPOSITORY` podem ser configurados independentemente como `fake`/`memory` ou `postgres`; todos usam memória por padrão. Quando PostgreSQL está ativo, sessões, memórias, identidade, sessões de autenticação e fluxo operacional possuem escopo por `organization_id` e índices dedicados. Falhas de banco não fazem fallback silencioso para memória.
+
+## Persistência operacional local
+
+Defina `ECOS_OPERATIONAL_REPOSITORY=postgres` para persistir o fluxo da interface
+operacional em PostgreSQL. A migration `20260712_01_create_operational_tables.py`
+cria `operational_sessions`, timeline, decisões de aprovação, tentativas de execução
+e chaves de idempotência. O frontend envia `Idempotency-Key` em ações mutáveis; replay
+com payload igual retorna o primeiro resultado e payload diferente retorna 409.
+
+A retenção das chaves é 24 horas. Para limpeza manual:
+
+```bash
+ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos \
+  scripts/cleanup-operational-retention.sh
+```
+
+Reconciliação protegida:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8000/api/v1/admin/reconcile \
+  -H "X-CSRF-Token: <csrf>" \
+  -b cookies.txt
+```
+
+A reconciliação não aprova automaticamente e não executa sem aprovação.
+
+## Backup e restore local
+
+```bash
+ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos \
+  ECOS_BACKUP_DIR=./backups \
+  scripts/backup-postgres.sh
+
+ECOS_DATABASE_URL=postgresql://ecos:ecos@localhost:5432/ecos \
+  ECOS_RESTORE_FILE=./backups/ecos-YYYYMMDDTHHMMSSZ.dump \
+  scripts/restore-postgres.sh
+```
+
+Depois do restore, execute `uv run alembic upgrade head`, valide `/health/ready`,
+login, overview e uma consulta de sessão. Para rollback de migration em ambiente
+descartável, use `uv run alembic downgrade -1` e reaplique `uv run alembic upgrade head`.
+Não há limpeza automática de auditoria, aprovações, execuções ou aprendizados validados.
 
 ## Observability persistente opcional
 

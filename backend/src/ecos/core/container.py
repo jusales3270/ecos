@@ -67,6 +67,11 @@ from ecos.observation import (
     ObservationEngine,
 )
 from ecos.operational import OperationalService
+from ecos.operational.postgres import PostgresOperationalRepository
+from ecos.operational.repository import (
+    InMemoryOperationalRepository,
+    OperationalRepository,
+)
 from ecos.orchestrator import (
     OrchestrationConfig,
     OrchestrationMode,
@@ -478,9 +483,15 @@ class Container:
             security_repository=self.security_repository,
             event_service=self.event_service,
             knowledge_graph_service=self.knowledge_graph_service,
+            repository=self._operational_repository(),
             demo_seed_enabled=self.settings.demo_seed_enabled,
             environment=self.settings.environment,
         )
+
+    def _operational_repository(self) -> OperationalRepository:
+        if self.settings.operational_repository == "postgres":
+            return PostgresOperationalRepository(self.settings.database_url)
+        return InMemoryOperationalRepository()
 
     def health(self) -> dict[str, Any]:
         """Return container, provider and runtime health information."""

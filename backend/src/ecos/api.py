@@ -190,6 +190,7 @@ def create_session(
         objective=payload.objective,
         description=payload.description,
         correlation_id=request.state.correlation_id_uuid,
+        idempotency_key=request.headers.get("Idempotency-Key"),
     )
 
 
@@ -205,10 +206,15 @@ def session_detail(
 @router.post("/sessions/{session_id}/start")
 def start_cognition(
     session_id: UUID,
+    request: Request,
     principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
     ops: Annotated[OperationalService, Depends(operational)],
 ):
-    return ops.start_cognition(principal_, session_id)
+    return ops.start_cognition(
+        principal_,
+        session_id,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    )
 
 
 @router.get("/recommendations/{session_id}")
@@ -235,16 +241,24 @@ def approvals(
 @router.post("/approvals/{approval_id}/approve")
 def approve(
     approval_id: UUID,
+    request: Request,
     principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
     ops: Annotated[OperationalService, Depends(operational)],
 ):
-    return ops.decide_approval(principal_, approval_id, approve=True, reason=None)
+    return ops.decide_approval(
+        principal_,
+        approval_id,
+        approve=True,
+        reason=None,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    )
 
 
 @router.post("/approvals/{approval_id}/reject")
 def reject(
     approval_id: UUID,
     payload: ApprovalDecisionRequest,
+    request: Request,
     principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
     ops: Annotated[OperationalService, Depends(operational)],
 ):
@@ -253,6 +267,7 @@ def reject(
         approval_id,
         approve=False,
         reason=payload.reason,
+        idempotency_key=request.headers.get("Idempotency-Key"),
     )
 
 
@@ -267,10 +282,15 @@ def executions(
 @router.post("/executions/{execution_id}/start")
 def start_execution(
     execution_id: UUID,
+    request: Request,
     principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
     ops: Annotated[OperationalService, Depends(operational)],
 ):
-    return ops.start_execution(principal_, execution_id)
+    return ops.start_execution(
+        principal_,
+        execution_id,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    )
 
 
 @router.get("/observations")
@@ -391,6 +411,14 @@ def organization_settings(
         "execution_mode": "dry_run",
         "global_admin_available_here": False,
     }
+
+
+@router.post("/admin/reconcile")
+def reconcile(
+    principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
+    ops: Annotated[OperationalService, Depends(operational)],
+):
+    return ops.reconcile(principal_)
 
 
 def _principal_payload(principal_: AuthenticatedPrincipal) -> dict[str, Any]:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from ecos.events import Event, EventMetadata, EventPriority, EventService, EventType
@@ -15,6 +16,7 @@ from ecos.knowledge import (
     SemanticQuery,
 )
 from ecos.knowledge.exceptions import ConflictingVersionError
+from ecos.operational.exceptions import OperationalConflictError
 from ecos.operational.models import (
     ApprovalStatus,
     ApprovalView,
@@ -26,6 +28,11 @@ from ecos.operational.models import (
     OrganizationOverview,
     RecommendationView,
     TimelineEntry,
+)
+from ecos.operational.repository import (
+    OperationalRepository,
+    idempotency_record,
+    payload_fingerprint,
 )
 from ecos.security import (
     AuthenticatedPrincipal,
@@ -56,6 +63,7 @@ class OperationalService:
         security_repository: SecurityRepository,
         event_service: EventService,
         knowledge_graph_service,
+        repository: OperationalRepository,
         demo_seed_enabled: bool,
         environment: str,
     ) -> None:
@@ -63,8 +71,9 @@ class OperationalService:
         self._security_repository = security_repository
         self._event_service = event_service
         self._knowledge_graph_service = knowledge_graph_service
-        self._sessions: dict[UUID, OperationalSessionView] = {}
+        self._repository = repository
         self._metrics = OperationalMetrics()
+        self._idempotency_ttl = timedelta(hours=24)
         if demo_seed_enabled and environment.lower() not in {"production", "prod"}:
             self.seed_demo_data()
 
@@ -242,9 +251,18 @@ class OperationalService:
         objective: str,
         description: str | None,
         correlation_id: UUID,
+        idempotency_key: str | None = None,
     ) -> OperationalSessionView:
         """Create an organization-scoped operational session."""
         self._security_service.authorize(principal, Permission.WRITE_SESSIONS)
+        cached = self._idempotency_hit(
+            principal,
+            "session.create",
+            idempotency_key,
+            {"objective": objective, "description": description},
+        )
+        if cached is not None:
+            return OperationalSessionView.model_validate(cached)
         session = OperationalSessionView(
             organization_id=principal.organization_id,
             created_by=principal.user_id,
@@ -256,11 +274,19 @@ class OperationalService:
             correlation_id=correlation_id,
         )
         session = self._append(session, "session.created", "Session created", principal)
-        self._sessions[session.session_id] = session
+        self._repository.save_session(session, expected_version=0)
         self._metrics = self._metrics.model_copy(
             update={"sessions_started": self._metrics.sessions_started + 1}
         )
         self._publish(EventType.SESSION_CREATED, session, principal)
+        self._store_idempotency(
+            principal,
+            "session.create",
+            idempotency_key,
+            {"objective": objective, "description": description},
+            session.model_dump(mode="json"),
+            session.session_id,
+        )
         return session
 
     def list_sessions(
@@ -271,32 +297,43 @@ class OperationalService:
     ) -> list[OperationalSessionView]:
         """List sessions for the authenticated organization."""
         self._security_service.authorize(principal, Permission.READ_SESSIONS)
-        sessions = self._sessions_for(principal)
-        if status:
-            sessions = [item for item in sessions if item.status.value == status]
-        return sorted(sessions, key=lambda item: item.created_at, reverse=True)
+        return self._repository.list_sessions(principal.organization_id, status=status)
 
     def get_session(
         self, principal: AuthenticatedPrincipal, session_id: UUID
     ) -> OperationalSessionView:
         """Return one session or fail closed for cross-tenant IDs."""
         self._security_service.authorize(principal, Permission.READ_SESSIONS)
-        session = self._sessions.get(session_id)
-        if session is None or session.organization_id != principal.organization_id:
+        result = self._repository.get_session(principal.organization_id, session_id)
+        if result is None:
             self._metrics = self._metrics.model_copy(
                 update={
                     "cross_tenant_attempts": self._metrics.cross_tenant_attempts + 1
                 }
             )
             raise AuthorizationError("resource is not available")
-        return session
+        return result[0]
 
     def start_cognition(
-        self, principal: AuthenticatedPrincipal, session_id: UUID
+        self,
+        principal: AuthenticatedPrincipal,
+        session_id: UUID,
+        idempotency_key: str | None = None,
     ) -> OperationalSessionView:
         """Run the deterministic cognitive cycle up to human approval."""
         self._security_service.authorize(principal, Permission.CREATE_DECISION)
-        session = self.get_session(principal, session_id)
+        cached = self._idempotency_hit(
+            principal,
+            "session.start",
+            idempotency_key,
+            {"session_id": str(session_id)},
+        )
+        if cached is not None:
+            return OperationalSessionView.model_validate(cached)
+        result = self._repository.get_session(principal.organization_id, session_id)
+        if result is None:
+            raise AuthorizationError("resource is not available")
+        session, version = result
         if session.status not in {OperationalSessionStatus.CREATED}:
             return session
         stages = (
@@ -383,9 +420,17 @@ class OperationalService:
             "Independent approval requested",
             principal,
         )
-        self._sessions[session_id] = updated
+        self._repository.save_session(updated, expected_version=version)
         self._publish(EventType.RECOMMENDATION_CREATED, updated, principal)
         self._publish(EventType.APPROVAL_REQUESTED, updated, principal)
+        self._store_idempotency(
+            principal,
+            "session.start",
+            idempotency_key,
+            {"session_id": str(session_id)},
+            updated.model_dump(mode="json"),
+            updated.session_id,
+        )
         return updated
 
     def list_approvals(
@@ -411,13 +456,25 @@ class OperationalService:
         *,
         approve: bool,
         reason: str | None,
+        idempotency_key: str | None = None,
     ) -> ApprovalView:
         """Approve or reject a recommendation with SoD enforcement."""
         self._security_service.authorize(principal, Permission.APPROVE_DECISION)
-        session = self._find_by_approval(principal, approval_id)
+        operation = "approval.approve" if approve else "approval.reject"
+        cached = self._idempotency_hit(
+            principal,
+            operation,
+            idempotency_key,
+            {"approval_id": str(approval_id), "reason": reason},
+        )
+        if cached is not None:
+            return ApprovalView.model_validate(cached)
+        session, version = self._find_by_approval_with_version(principal, approval_id)
         approval = session.approval
         if approval is None:
             raise AuthorizationError("approval is not available")
+        if approval.status != ApprovalStatus.PENDING:
+            raise OperationalConflictError("approval has already been decided")
         if approval.requester_id == principal.user_id:
             raise AuthorizationError("requester cannot approve this recommendation")
         if not approve and not reason:
@@ -454,7 +511,7 @@ class OperationalService:
             "Recommendation approved" if approve else "Recommendation rejected",
             principal,
         )
-        self._sessions[session.session_id] = updated
+        self._repository.save_session(updated, expected_version=version)
         self._metrics = self._metrics.model_copy(
             update={
                 "approvals": self._metrics.approvals + (1 if approve else 0),
@@ -465,6 +522,14 @@ class OperationalService:
             EventType.APPROVAL_GRANTED if approve else EventType.APPROVAL_REJECTED
         )
         self._publish(approval_event, updated, principal)
+        self._store_idempotency(
+            principal,
+            operation,
+            idempotency_key,
+            {"approval_id": str(approval_id), "reason": reason},
+            decided.model_dump(mode="json"),
+            approval_id,
+        )
         return decided
 
     def list_executions(self, principal: AuthenticatedPrincipal) -> list[ExecutionView]:
@@ -477,11 +542,22 @@ class OperationalService:
         ]
 
     def start_execution(
-        self, principal: AuthenticatedPrincipal, execution_id: UUID
+        self,
+        principal: AuthenticatedPrincipal,
+        execution_id: UUID,
+        idempotency_key: str | None = None,
     ) -> ExecutionView:
         """Execute only an explicitly approved dry-run plan."""
         self._security_service.authorize(principal, Permission.EXECUTE_ACTION)
-        session = self._find_by_execution(principal, execution_id)
+        cached = self._idempotency_hit(
+            principal,
+            "execution.start",
+            idempotency_key,
+            {"execution_id": str(execution_id)},
+        )
+        if cached is not None:
+            return ExecutionView.model_validate(cached)
+        session, version = self._find_by_execution_with_version(principal, execution_id)
         execution = session.execution
         if execution is None:
             raise AuthorizationError("execution is not available")
@@ -490,6 +566,10 @@ class OperationalService:
             or session.approval.status != ApprovalStatus.APPROVED
         ):
             raise AuthorizationError("execution requires explicit approval")
+        if execution.status == ExecutionStatus.COMPLETED:
+            raise OperationalConflictError("execution has already completed")
+        if execution.status == ExecutionStatus.RUNNING:
+            raise OperationalConflictError("execution is already running")
         running = execution.model_copy(
             update={
                 "status": ExecutionStatus.RUNNING,
@@ -524,7 +604,7 @@ class OperationalService:
             ("learning.completed", "Learning record validated"),
         ):
             updated = self._append(updated, event_type, message, principal)
-        self._sessions[session.session_id] = updated
+        self._repository.save_session(updated, expected_version=version)
         self._metrics = self._metrics.model_copy(
             update={
                 "executions": self._metrics.executions + 1,
@@ -534,7 +614,51 @@ class OperationalService:
         self._publish(EventType.EXECUTION_COMPLETED, updated, principal)
         self._publish(EventType.OBSERVATION_COMPLETED, updated, principal)
         self._publish(EventType.LEARNING_COMPLETED, updated, principal)
+        self._store_idempotency(
+            principal,
+            "execution.start",
+            idempotency_key,
+            {"execution_id": str(execution_id)},
+            completed.model_dump(mode="json"),
+            execution_id,
+        )
         return completed
+
+    def reconcile(self, principal: AuthenticatedPrincipal) -> dict[str, object]:
+        """Reconcile interrupted operational flows without auto-approval/execution."""
+        self._security_service.authorize(principal, Permission.ADMINISTER_ORGANIZATION)
+        sessions = self._repository.interrupted_sessions(principal.organization_id)
+        recovered = 0
+        failed = 0
+        for session in sessions:
+            result = self._repository.get_session(
+                principal.organization_id, session.session_id
+            )
+            if result is None:
+                continue
+            current, version = result
+            if current.status in {
+                OperationalSessionStatus.PROCESSING,
+                OperationalSessionStatus.EXECUTING,
+            }:
+                current = self._append(
+                    current,
+                    "reconciliation.failed",
+                    "Interrupted operation requires manual review",
+                    principal,
+                ).model_copy(update={"status": OperationalSessionStatus.FAILED})
+                failed += 1
+            else:
+                current = self._append(
+                    current,
+                    "reconciliation.checked",
+                    "Persisted state is safe to resume manually",
+                    principal,
+                )
+                recovered += 1
+            self._repository.save_session(current, expected_version=version)
+            self._publish(EventType.OBSERVABILITY_RECOVERED, current, principal)
+        return {"checked": len(sessions), "recovered": recovered, "failed": failed}
 
     def search_knowledge(
         self, principal: AuthenticatedPrincipal, query: str
@@ -691,30 +815,94 @@ class OperationalService:
     def _sessions_for(
         self, principal: AuthenticatedPrincipal
     ) -> list[OperationalSessionView]:
-        return [
-            item
-            for item in self._sessions.values()
-            if item.organization_id == principal.organization_id
-        ]
+        return self._repository.list_sessions(principal.organization_id)
 
     def _find_by_approval(
         self, principal: AuthenticatedPrincipal, approval_id: UUID
     ) -> OperationalSessionView:
-        for item in self._sessions_for(principal):
-            if item.approval is not None and item.approval.approval_id == approval_id:
-                return item
+        result = self._repository.find_by_approval(
+            principal.organization_id, approval_id
+        )
+        if result is not None:
+            return result[0]
+        raise AuthorizationError("resource is not available")
+
+    def _find_by_approval_with_version(
+        self, principal: AuthenticatedPrincipal, approval_id: UUID
+    ) -> tuple[OperationalSessionView, int]:
+        result = self._repository.find_by_approval(
+            principal.organization_id, approval_id
+        )
+        if result is not None:
+            return result
         raise AuthorizationError("resource is not available")
 
     def _find_by_execution(
         self, principal: AuthenticatedPrincipal, execution_id: UUID
     ) -> OperationalSessionView:
-        for item in self._sessions_for(principal):
-            if (
-                item.execution is not None
-                and item.execution.execution_id == execution_id
-            ):
-                return item
+        result = self._repository.find_by_execution(
+            principal.organization_id, execution_id
+        )
+        if result is not None:
+            return result[0]
         raise AuthorizationError("resource is not available")
+
+    def _find_by_execution_with_version(
+        self, principal: AuthenticatedPrincipal, execution_id: UUID
+    ) -> tuple[OperationalSessionView, int]:
+        result = self._repository.find_by_execution(
+            principal.organization_id, execution_id
+        )
+        if result is not None:
+            return result
+        raise AuthorizationError("resource is not available")
+
+    def _idempotency_hit(
+        self,
+        principal: AuthenticatedPrincipal,
+        operation: str,
+        key: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not key:
+            return None
+        record = self._repository.get_idempotency(
+            organization_id=principal.organization_id,
+            user_id=principal.user_id,
+            operation=operation,
+            key=key,
+        )
+        if record is None:
+            return None
+        if record.request_hash != payload_fingerprint(payload):
+            from ecos.operational.exceptions import IdempotencyConflictError
+
+            raise IdempotencyConflictError()
+        return record.response_payload
+
+    def _store_idempotency(
+        self,
+        principal: AuthenticatedPrincipal,
+        operation: str,
+        key: str | None,
+        payload: dict[str, Any],
+        response_payload: dict[str, Any],
+        resource_id: UUID | None,
+    ) -> None:
+        if not key:
+            return
+        self._repository.store_idempotency(
+            idempotency_record(
+                organization_id=principal.organization_id,
+                user_id=principal.user_id,
+                operation=operation,
+                key=key,
+                request_hash=payload_fingerprint(payload),
+                response_payload=response_payload,
+                resource_id=resource_id,
+                ttl=self._idempotency_ttl,
+            )
+        )
 
     def _append(
         self,

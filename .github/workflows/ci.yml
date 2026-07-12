@@ -7,6 +7,20 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ecos
+          POSTGRES_USER: ecos
+          POSTGRES_PASSWORD: ecos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ecos -d ecos"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,6 +46,21 @@ jobs:
       - name: Backend tests
         working-directory: backend
         run: uv run pytest
+      - name: Migration upgrade
+        working-directory: backend
+        env:
+          ECOS_DATABASE_URL: postgresql://ecos:ecos@localhost:5432/ecos
+        run: uv run alembic upgrade head
+      - name: Migration downgrade smoke
+        working-directory: backend
+        env:
+          ECOS_DATABASE_URL: postgresql://ecos:ecos@localhost:5432/ecos
+        run: uv run alembic downgrade -1 && uv run alembic upgrade head
+      - name: Backend tests with PostgreSQL
+        working-directory: backend
+        env:
+          ECOS_TEST_DATABASE_URL: postgresql://ecos:ecos@localhost:5432/ecos
+        run: uv run pytest
       - name: Frontend dependencies
         working-directory: frontend
         run: npm ci
@@ -47,6 +76,12 @@ jobs:
       - name: Frontend build
         working-directory: frontend
         run: npm run build
+      - name: Playwright install
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Playwright tests
+        working-directory: frontend
+        run: npm run e2e
       - name: Validate migrations
         working-directory: backend
         run: uv run alembic history
