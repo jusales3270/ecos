@@ -62,6 +62,10 @@ class Settings(BaseSettings):
         default="memory",
         description="Operational workflow repository implementation.",
     )
+    runtime_checkpoint_repository: Literal["memory", "postgres"] = Field(
+        default="memory",
+        description="Authenticated runtime checkpoint repository implementation.",
+    )
     auth_token_secret: str = Field(
         default="development-only-auth-secret-change-me-000000",
         description="Local token signing secret supplied through secure config.",
@@ -197,6 +201,7 @@ class Settings(BaseSettings):
             or self.security_repository != "postgres"
             or self.observability_repository != "postgres"
             or self.operational_repository != "postgres"
+            or self.runtime_checkpoint_repository != "postgres"
         ):
             msg = "PostgreSQL repositories must be explicit in production"
             raise ValueError(msg)

@@ -97,6 +97,7 @@ from ecos.providers import (
 )
 from ecos.reasoning import AIReasoningEngine, ReasoningService
 from ecos.runtime import (
+    AuthenticatedRuntimeService,
     CognitivePipeline,
     FakeAIProvider,
     FakeContextProvider,
@@ -110,6 +111,10 @@ from ecos.runtime import (
     FakeSessionRepository,
     FakeSpecialistProvider,
     FakeWarEngine,
+    InMemoryRuntimeCheckpointRepository,
+    PostgresRuntimeCheckpointRepository,
+    RuntimeArtifactCodec,
+    RuntimeCheckpointRepository,
     RuntimeEngine,
 )
 from ecos.runtime.adapters import (
@@ -177,6 +182,13 @@ class Container:
             )
         else:
             self.session_repository = FakeSessionRepository()
+        self.runtime_checkpoint_repository: RuntimeCheckpointRepository
+        if self.settings.runtime_checkpoint_repository == "postgres":
+            self.runtime_checkpoint_repository = PostgresRuntimeCheckpointRepository(
+                self.settings.database_url
+            )
+        else:
+            self.runtime_checkpoint_repository = InMemoryRuntimeCheckpointRepository()
         self.planner_provider = FakePlannerProvider()
         self.specialist_provider = FakeSpecialistProvider()
         self.decision_provider = FakeDecisionProvider()
@@ -492,7 +504,20 @@ class Container:
             orchestrator_service=self.orchestrator_service,
             ai_service=self.ai_service,
         )
-        self.runtime_engine = RuntimeEngine(self.runtime_pipeline)
+        self.runtime_artifact_codec = RuntimeArtifactCodec()
+        self.authenticated_runtime_service = AuthenticatedRuntimeService(
+            session_service=self.session_service,
+            planner_service=self.planner_service,
+            orchestrator_service=self.orchestrator_service,
+            governance_engine=self.governance_engine,
+            checkpoint_repository=self.runtime_checkpoint_repository,
+            artifact_codec=self.runtime_artifact_codec,
+            clock=lambda: datetime.now(UTC),
+        )
+        self.runtime_engine = RuntimeEngine(
+            self.runtime_pipeline,
+            self.authenticated_runtime_service,
+        )
         if self.settings.security_repository == "postgres":
             self.security_controls = PostgresSecurityControlRepository(
                 self.settings.database_url

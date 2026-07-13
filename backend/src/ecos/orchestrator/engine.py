@@ -96,6 +96,14 @@ class Orchestrator:
         """Execute orchestration synchronously for current runtime callers."""
         return asyncio.run(self.execute_async(orchestration_input))
 
+    def resume(
+        self,
+        orchestration_input: OrchestrationInput,
+        resumable_state: ResumableOrchestrationState,
+    ) -> OrchestrationResult:
+        """Resume orchestration synchronously from a validated durable checkpoint."""
+        return asyncio.run(self.resume_async(orchestration_input, resumable_state))
+
     async def execute_async(
         self,
         orchestration_input: OrchestrationInput,
@@ -246,6 +254,7 @@ class Orchestrator:
         stage_id = self._stage_id(stage)
         if stage_id in state.stage_results:
             return
+        self._validate_governance_for_stage(state, stage)
         if stage.conditional and stage.condition is not None:
             if not self._evaluate_condition(state, stage):
                 if stage.required:
@@ -263,7 +272,6 @@ class Orchestrator:
                 )
                 self._publish(state.orchestration_input, EventType.STAGE_SKIPPED, stage)
                 return
-        self._validate_governance_for_stage(state, stage)
         self._timeline(state, TimelineEntryType.STAGE, "ready", stage=stage)
         self._publish(state.orchestration_input, EventType.STAGE_READY, stage)
         self._sync_session(
@@ -537,15 +545,15 @@ class Orchestrator:
         self,
         state: "_RuntimeState",
     ) -> GovernanceResult | None:
+        initial = state.orchestration_input.initial_inputs.get("governance")
+        if isinstance(initial, GovernanceResult):
+            return initial
         for result in state.stage_results.values():
             if result.engine == "governance" and isinstance(
                 result.output,
                 GovernanceResult,
             ):
                 return result.output
-        initial = state.orchestration_input.initial_inputs.get("governance")
-        if isinstance(initial, GovernanceResult):
-            return initial
         return None
 
     def _validate_governance_result_for_execution(
@@ -629,6 +637,15 @@ class Orchestrator:
             return True
         operator = condition.type
         requirements = condition.requirements
+        if operator == "governance_approval":
+            governance = self._governance_result_from_outputs(state)
+            return (
+                state.orchestration_input.approval_state.status
+                is ApprovalStatus.APPROVED
+                and governance is not None
+                and governance.status is GovernanceResultStatus.AUTHORIZED
+                and governance.execution_authorized
+            )
         if operator not in _ALLOWED_OPERATORS:
             raise OperatorNotAllowedError(f"condition operator not allowed: {operator}")
         if operator in {"all", "any"}:

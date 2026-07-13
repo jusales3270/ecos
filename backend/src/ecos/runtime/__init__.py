@@ -1,5 +1,12 @@
 """Runtime execution primitives for ECOS."""
 
+from ecos.runtime.artifacts import (
+    InvalidArtifactError,
+    RuntimeArtifactCodec,
+    RuntimeArtifactError,
+    UnknownArtifactTypeError,
+    UnknownArtifactVersionError,
+)
 from ecos.runtime.engine import CognitivePipeline, RuntimeEngine
 from ecos.runtime.fakes import (
     FakeAIProvider,
@@ -15,10 +22,34 @@ from ecos.runtime.fakes import (
     FakeSpecialistProvider,
     FakeWarEngine,
 )
-from ecos.runtime.models import ExecutionContext, RuntimeResult
+from ecos.runtime.models import (
+    AuthenticatedRuntimeResult,
+    ExecutionContext,
+    ResumeSessionCommand,
+    RuntimeResult,
+    StartExistingSessionCommand,
+)
+from ecos.runtime.postgres_repository import PostgresRuntimeCheckpointRepository
+from ecos.runtime.repository import (
+    ArtifactEnvelope,
+    InMemoryRuntimeCheckpointRepository,
+    RuntimeCheckpoint,
+    RuntimeCheckpointConflictError,
+    RuntimeCheckpointError,
+    RuntimeCheckpointNotFoundError,
+    RuntimeCheckpointRepository,
+    RuntimeCheckpointScopeError,
+    RuntimeCheckpointStatus,
+    SerializedResumableState,
+    SerializedStageResult,
+)
+from ecos.runtime.service import AuthenticatedRuntimeService
 
 __all__ = [
     "CognitivePipeline",
+    "ArtifactEnvelope",
+    "AuthenticatedRuntimeResult",
+    "AuthenticatedRuntimeService",
     "ExecutionContext",
     "FakeAIProvider",
     "FakeContextProvider",
@@ -32,6 +63,24 @@ __all__ = [
     "FakeSessionRepository",
     "FakeSpecialistProvider",
     "FakeWarEngine",
+    "InMemoryRuntimeCheckpointRepository",
+    "InvalidArtifactError",
+    "PostgresRuntimeCheckpointRepository",
+    "ResumeSessionCommand",
+    "RuntimeArtifactCodec",
+    "RuntimeArtifactError",
+    "RuntimeCheckpoint",
+    "RuntimeCheckpointConflictError",
+    "RuntimeCheckpointError",
+    "RuntimeCheckpointNotFoundError",
+    "RuntimeCheckpointRepository",
+    "RuntimeCheckpointScopeError",
+    "RuntimeCheckpointStatus",
     "RuntimeEngine",
     "RuntimeResult",
+    "SerializedResumableState",
+    "SerializedStageResult",
+    "StartExistingSessionCommand",
+    "UnknownArtifactTypeError",
+    "UnknownArtifactVersionError",
 ]

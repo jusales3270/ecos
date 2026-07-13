@@ -13,6 +13,7 @@ from ecos.governance.exceptions import (
     ExpiredPolicyError,
     FieldNotAllowedError,
     IncompatibleApprovalError,
+    InconsistentGovernanceResultError,
     InvalidGovernanceRequestError,
     InvalidIdentityError,
     OperatorNotAllowedError,
@@ -325,6 +326,122 @@ class GovernanceEngine:
             reason_codes=(decision.decision.value,),
         )
         return updated, tuple(audit_list)
+
+    def authorize_after_quorum(
+        self,
+        *,
+        result: GovernanceResult,
+        approval_request: ApprovalRequest,
+        audit_records: tuple[AuditRecord, ...] = (),
+    ) -> GovernanceResult:
+        """Issue execution authorization only after a validated human quorum."""
+        original = result.approval_request
+        authorization = result.authorization_decision
+        if original is None or authorization is None:
+            raise InconsistentGovernanceResultError(
+                "governance result has no approval authorization"
+            )
+        if (
+            original.approval_request_id != approval_request.approval_request_id
+            or original.governance_id != approval_request.governance_id
+            or original.authorization_id != approval_request.authorization_id
+            or result.organization_id != approval_request.organization_id
+            or result.session_id != approval_request.session_id
+            or result.plan_id != approval_request.plan_id
+            or result.correlation_id != approval_request.correlation_id
+        ):
+            raise IncompatibleApprovalError("approval result scope mismatch")
+        if authorization.authorization_id != approval_request.authorization_id:
+            raise IncompatibleApprovalError("approval authorization mismatch")
+        if approval_request.expires_at <= self._now():
+            raise ApprovalRequestExpiredError("approval request is expired")
+        if approval_request.status is not ApprovalRequestStatus.GRANTED:
+            raise InconsistentGovernanceResultError(
+                "approval quorum has not been granted"
+            )
+        approvals = approval_request.current_approvals
+        if not self._quorum_met(approval_request, approvals):
+            raise InconsistentGovernanceResultError("approval quorum is incomplete")
+        for decision in approvals:
+            self._validate_decision_scope(approval_request, decision)
+            identity = self._identity_port.validate_identity(
+                actor_id=decision.actor_id,
+                organization_id=decision.organization_id,
+            )
+            if identity is None or not identity.active or not identity.verified:
+                raise InvalidIdentityError(
+                    "identity is unknown, inactive, or unverified"
+                )
+            if (
+                decision.actor_role not in identity.roles
+                or decision.actor_role not in approval_request.required_roles
+            ):
+                raise UnauthorizedRoleError("approval role is not valid")
+            if (
+                approval_request.distinct_approvers_required
+                and approval_request.requester_id == decision.actor_id
+            ):
+                raise UnauthorizedRoleError("requester cannot approve this request")
+        now = self._now()
+        authorized = authorization.model_copy(
+            update={
+                "decision": AuthorizationDecisionValue.AUTHORIZED,
+                "approval_required": True,
+                "execution_authorized": True,
+                "valid_from": now,
+                "valid_until": now + self._config.authorization_ttl,
+                "human_escalation_required": False,
+                "reason_codes": (*authorization.reason_codes, "human_quorum_granted"),
+            }
+        )
+        audits = list(audit_records or result.audit_records)
+        self._audit_for_scope(
+            audits,
+            governance_id=result.governance_id,
+            organization_id=result.organization_id,
+            session_id=result.session_id,
+            plan_id=result.plan_id,
+            correlation_id=result.correlation_id,
+            action="authorization_granted_after_quorum",
+            outcome=GovernanceResultStatus.AUTHORIZED.value,
+            policy_references=authorized.policy_references,
+            approval_level=authorized.approval_level,
+            risk_level=authorized.risk_level,
+            reason_codes=("human_quorum_granted",),
+            previous_state=result.status.value,
+            new_state=GovernanceResultStatus.AUTHORIZED.value,
+        )
+        self._publish_scope(
+            EventType.AUTHORIZATION_GRANTED,
+            governance_id=result.governance_id,
+            organization_id=result.organization_id,
+            session_id=result.session_id,
+            plan_id=result.plan_id,
+            correlation_id=result.correlation_id,
+            policy_references=authorized.policy_references,
+            reason_codes=("human_quorum_granted",),
+        )
+        return result.model_copy(
+            update={
+                "status": GovernanceResultStatus.AUTHORIZED,
+                "authorization_decision": authorized,
+                "approval_request": approval_request,
+                "approval_state": ApprovalState(
+                    approval_request=approval_request,
+                    decisions=(
+                        *approval_request.current_approvals,
+                        *approval_request.current_rejections,
+                    ),
+                    status=approval_request.status,
+                ),
+                "audit_records": tuple(audits),
+                "execution_authorized": True,
+                "continuation_allowed": True,
+                "human_review_required": False,
+                "completed_at": now,
+                "reason_codes": (*result.reason_codes, "human_quorum_granted"),
+            }
+        )
 
     def _validate_request(self, request: GovernanceRequest) -> None:
         if request.organization_id is None:

@@ -34,6 +34,14 @@ O núcleo de domínio inicial está em `backend/src/ecos/domain/` e modela apena
 
 O fluxo cognitivo executável está em `backend/src/ecos/runtime/`. O Runtime cria a Session, solicita um `CognitivePlan` ao Planner e delega a execução coordenada ao Orchestrator real. O endpoint `POST /runtime/demo` preserva o mesmo contrato público e executa por padrão sem IA, banco de dados, embeddings, provedores reais ou chamadas externas.
 
+O caminho autenticado e retomável aceita IDs explícitos de sessão, organização,
+usuário e correlação, inicia somente uma Cognitive Session já existente e persiste
+um checkpoint tipado antes do gate humano. A retomada restaura estágios concluídos,
+registra decisões no Governance Engine e só alcança a Execution Layer depois de
+quorum humano válido. Configure `ECOS_RUNTIME_CHECKPOINT_REPOSITORY=postgres` para
+persistência durável; `memory` permanece o padrão local. Esse serviço ainda não é
+exposto pelos endpoints da SARA.
+
 ## AI Provider Abstraction
 
 A AI Provider Abstraction está em `backend/src/ecos/providers/` e mantém os Engines desacoplados de SDKs externos. O provider OpenAI usa o SDK oficial e a Responses API para geração de texto; `fake` continua sendo o padrão, inclusive para testes e para o runtime demo. Com `ECOS_AI_PROVIDER=openai`, o Container ativa as implementações provider-backed de Reasoning, Debate, War/Simulation e Decision Support, sempre por injeção do contrato genérico `AIProvider`.
