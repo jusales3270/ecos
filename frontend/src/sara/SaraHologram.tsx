@@ -1,42 +1,16 @@
 import { useEffect, useRef } from "react";
+import { createSaraHologramEngine } from "./saraHologramEngine";
+import type { HologramEngine } from "./saraHologramTypes";
 import type { SaraMode, SaraState } from "./saraTypes";
 
-const colors = ["#ffb54d", "#ff8c1a", "#ffd591", "#c25607", "#ffedc4", "#ff7a00"];
-type Particle = { a: number; r: number; speed: number; size: number; color: string; tilt: number };
+export type SaraHologramProps = { mode:Exclude<SaraMode,"closed">; state:SaraState; reducedMotion:boolean; speakPulse:number };
 
-export function SaraHologram({ mode, state, reducedMotion }: { mode: SaraMode; state: SaraState; reducedMotion: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const particlesRef = useRef<Particle[] | null>(null);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || mode === "closed") return;
-    if (!particlesRef.current) particlesRef.current = Array.from({ length: 2200 }, (_, index) => ({ a: Math.random() * Math.PI * 2, r: .18 + (index % 7) * .105 + Math.random() * .09, speed: .0008 + Math.random() * .0028, size: .5 + Math.random() * 1.8, color: colors[index % colors.length], tilt: (index % 7) * .42 }));
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    let raf = 0;
-    let hidden = document.hidden;
-    const resize = () => {
-      const size = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      canvas.width = Math.max(1, Math.floor(size.width * dpr)); canvas.height = Math.max(1, Math.floor(size.height * dpr));
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-    const visibility = () => { hidden = document.hidden; };
-    const draw = (time: number) => {
-      const w = canvas.clientWidth, h = canvas.clientHeight, radius = Math.min(w, h) * .36;
-      context.clearRect(0, 0, w, h); context.globalCompositeOperation = "lighter";
-      const limit = reducedMotion ? 260 : mode === "mini" ? 650 : 2200;
-      if (!hidden || time % 4 < 1) particlesRef.current?.slice(0, limit).forEach((p, index) => {
-        if (!reducedMotion && !hidden) p.a += p.speed * (state === "thinking" ? 3 : state === "speaking" ? 1.8 : 1);
-        const x3 = Math.cos(p.a) * p.r, y3 = Math.sin(p.a) * p.r * Math.cos(p.tilt), z3 = Math.sin(p.a) * p.r * Math.sin(p.tilt);
-        const scale = 1 / (1.35 - z3); const x = w / 2 + x3 * radius * scale, y = h / 2 + y3 * radius * scale;
-        context.globalAlpha = .2 + scale * .5; context.fillStyle = p.color;
-        const s = p.size * scale * (state === "listening" && index % 8 === 0 ? 2 : 1); context.fillRect(x, y, s, s);
-      });
-      context.globalAlpha = 1; raf = requestAnimationFrame(draw);
-    };
-    resize(); window.addEventListener("resize", resize); document.addEventListener("visibilitychange", visibility); raf = requestAnimationFrame(draw);
-    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); document.removeEventListener("visibilitychange", visibility); };
-  }, [mode, reducedMotion, state]);
-  return <canvas ref={canvasRef} className="sh-canvas" aria-hidden="true" />;
+export function SaraHologram({mode,state,reducedMotion,speakPulse}:SaraHologramProps){
+  const canvasRef=useRef<HTMLCanvasElement>(null),engineRef=useRef<HologramEngine|null>(null),drag=useRef({active:false,moved:false,x:0,y:0}),initial=useRef({mode,state,reducedMotion,speakPulse});
+  useEffect(()=>{const canvas=canvasRef.current;if(!canvas)return;const engine=createSaraHologramEngine(canvas,initial.current);engineRef.current=engine;const observer=typeof ResizeObserver!=="undefined"?new ResizeObserver(()=>engine.resize()):null;observer?.observe(canvas);window.addEventListener("resize",engine.resize);engine.start();return()=>{observer?.disconnect();window.removeEventListener("resize",engine.resize);engine.destroy();engineRef.current=null;};},[]);
+  useEffect(()=>engineRef.current?.update({mode,state,reducedMotion,speakPulse}),[mode,state,reducedMotion,speakPulse]);
+  return <canvas ref={canvasRef} className="sh-canvas" aria-hidden="true" data-particles={reducedMotion?320:mode==="mini"?720:2200}
+    onPointerDown={e=>{if(mode!=="full")return;drag.current={active:true,moved:false,x:e.clientX,y:e.clientY};e.currentTarget.setPointerCapture?.(e.pointerId);}}
+    onPointerMove={e=>{const d=drag.current;if(mode!=="full"||!d.active)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(Math.abs(dx)+Math.abs(dy)>3)d.moved=true;engineRef.current?.rotate(dx,dy);d.x=e.clientX;d.y=e.clientY;}}
+    onPointerUp={()=>{drag.current.active=false;}} onPointerCancel={()=>{drag.current.active=false;}} />;
 }
