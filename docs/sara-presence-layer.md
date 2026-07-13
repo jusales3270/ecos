@@ -73,6 +73,12 @@ Web Speech API é progressiva e respeita a preferência de voz. Reconhecimento i
 
 Defina `VITE_SARA_TTS_URL` com a URL de um endpoint autenticado do E.C.O.S. que aceite `{ "text": "..." }` e devolva áudio. O navegador nunca chama um provider diretamente. Falhas usam Web Speech como fallback; áudio anterior é cancelado e blob URLs são revogadas. Deixe a variável vazia para usar somente Web Speech.
 
+## Motor visual volumétrico
+
+O Sprint 19C restaura o motor Canvas 2D oficial em `saraHologramEngine.ts`: sete bandas orbitais em ângulo áureo, 2.200 partículas no modo expandido, projeção e oclusão 3D, 42 arcos, três anéis giroscópicos e 13 nós neurais. O modo mini e `prefers-reduced-motion` reduzem o orçamento de renderização sem criar um segundo motor. Estados adicionais do E.C.O.S. são somente mapeamentos visuais; não representam aprovação ou execução por parte da SARA.
+
+O pulso de fala é produzido por eventos `boundary` do Web Speech, pela amplitude do áudio TTS quando o navegador permite conectar um analisador e por temporização de palavras como fallback. Essa instrumentação não inicia nem duplica a reprodução de áudio.
+
 ## Evolução futura
 
 Browser Execution e automação desktop poderão consumir novos tipos de ação somente depois de contratos autenticados, confirmação humana, políticas e auditoria próprias. O contrato atual não controla navegador externo, desktop ou aplicativos do sistema.
