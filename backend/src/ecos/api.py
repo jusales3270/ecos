@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -40,6 +40,24 @@ class SessionCreateRequest(BaseModel):
     organization_id: UUID | None = Field(
         default=None,
         description="Ignored; organization comes from authenticated principal.",
+    )
+
+
+class SaraHistoryItem(BaseModel):
+    """Bounded plain-text context supplied by the presence layer."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class SaraInteractionRequest(BaseModel):
+    """SARA input; organization and user are always derived from authentication."""
+
+    message: str = Field(min_length=1, max_length=2000)
+    history: list[SaraHistoryItem] = Field(default_factory=list, max_length=12)
+    session_id: UUID | None = None
+    route_context: str = Field(
+        default="/", pattern=r"^/[A-Za-z0-9/_-]*$", max_length=200
     )
 
 
@@ -238,6 +256,25 @@ def start_cognition(
     return ops.start_cognition(
         principal_,
         session_id,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    )
+
+
+@router.post("/sara/interactions")
+def sara_interaction(
+    payload: SaraInteractionRequest,
+    request: Request,
+    principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
+    ops: Annotated[OperationalService, Depends(operational)],
+):
+    """Record a SARA interaction without bypassing the cognitive workflow."""
+    return ops.sara_interaction(
+        principal_,
+        message=payload.message,
+        history=tuple(item.model_dump() for item in payload.history),
+        session_id=payload.session_id,
+        route_context=payload.route_context,
+        correlation_id=request.state.correlation_id_uuid,
         idempotency_key=request.headers.get("Idempotency-Key"),
     )
 

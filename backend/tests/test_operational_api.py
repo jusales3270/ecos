@@ -159,3 +159,68 @@ def test_health_metrics_and_runtime_demo_contract() -> None:
     assert demo.json()["recommendation"] == (
         "Proceed using ECOS context, reasoning, debate and governance."
     )
+
+
+def test_sara_interaction_requires_auth_and_creates_governed_session() -> None:
+    with TestClient(app) as client:
+        denied = client.post("/api/v1/sara/interactions", json={"message": "test"})
+        csrf = login(client, "operator@demo.ecos.local", "operator-demo-password")
+        result = client.post(
+            "/api/v1/sara/interactions",
+            json={
+                "message": "Assess a bounded risk",
+                "history": [],
+                "route_context": "/governance",
+            },
+            headers={"X-CSRF-Token": csrf, "Idempotency-Key": "sara-test-create"},
+        )
+        session = client.get(f"/api/v1/sessions/{result.json()['session_id']}")
+        resumed = client.post(
+            "/api/v1/sara/interactions",
+            json={
+                "message": "Add context without execution",
+                "session_id": result.json()["session_id"],
+            },
+            headers={"X-CSRF-Token": csrf},
+        )
+        updated = client.get(f"/api/v1/sessions/{result.json()['session_id']}")
+
+    assert denied.status_code == 401
+    assert result.status_code == 200
+    assert result.json()["cognitive_state"] == "created"
+    assert result.json()["ui_actions"] == [
+        {"type": "open_session", "session_id": result.json()["session_id"]}
+    ]
+    assert session.json()["status"] == "created"
+    assert session.json()["approval"] is None
+    assert session.json()["execution"] is None
+    assert resumed.status_code == 200
+    assert updated.json()["timeline"][-1]["event_type"] == ("sara.interaction.received")
+    assert "Add context" not in str(updated.json())
+
+
+def test_sara_validation_history_limit_and_tenant_isolation() -> None:
+    with TestClient(app) as client:
+        csrf = login(client, "operator@demo.ecos.local", "operator-demo-password")
+        created = client.post(
+            "/api/v1/sara/interactions",
+            json={"message": "tenant A"},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        invalid = client.post(
+            "/api/v1/sara/interactions",
+            json={"message": "", "history": [{"role": "user", "content": "x"}] * 13},
+            headers={"X-CSRF-Token": csrf},
+        )
+        client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
+        other_csrf = login(
+            client, "operator@tenant-b.ecos.local", "tenant-b-demo-password"
+        )
+        cross = client.post(
+            "/api/v1/sara/interactions",
+            json={"message": "cross", "session_id": created["session_id"]},
+            headers={"X-CSRF-Token": other_csrf},
+        )
+
+    assert invalid.status_code == 422
+    assert cross.status_code == 403

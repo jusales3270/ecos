@@ -307,6 +307,76 @@ class OperationalService:
         self._security_service.authorize(principal, Permission.READ_SESSIONS)
         return self._repository.list_sessions(principal.organization_id, status=status)
 
+    def sara_interaction(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        message: str,
+        history: tuple[dict[str, str], ...],
+        session_id: UUID | None,
+        route_context: str,
+        correlation_id: UUID,
+        idempotency_key: str | None = None,
+    ) -> dict[str, object]:
+        """Attach presence input to a governed session without starting execution."""
+        del history
+        if session_id is None:
+            session = self.create_session(
+                principal,
+                objective=message[:200],
+                description=f"SARA presence interaction from {route_context}",
+                correlation_id=correlation_id,
+                idempotency_key=idempotency_key,
+            )
+        else:
+            session = self.get_session(principal, session_id)
+            stored = self._repository.get_session(
+                principal.organization_id, session.session_id
+            )
+            if stored is None:
+                raise AuthorizationError("resource is not available")
+            _, version = stored
+            session = self._append(
+                session,
+                "sara.interaction.received",
+                "SARA interaction received without storing message content",
+                principal,
+            )
+            self._save_with_events(
+                session,
+                expected_version=version,
+                event_types=(EventType.SESSION_UPDATED,),
+                principal=principal,
+            )
+        state = session.status.value
+        if state == OperationalSessionStatus.WAITING_APPROVAL.value:
+            response = (
+                "A sessão está aguardando aprovação humana. Posso abrir as "
+                "aprovações, mas não aprová-las."
+            )
+            actions: tuple[dict[str, str], ...] = ({"type": "open_approvals"},)
+        elif state == OperationalSessionStatus.EXECUTING.value:
+            response = (
+                "Acompanho uma execução aprovada registrada nesta sessão. "
+                "Posso abrir a área de execuções."
+            )
+            actions = ({"type": "open_executions"},)
+        else:
+            response = (
+                "Registrei sua entrada como objetivo de uma sessão cognitiva. "
+                "A SARA não aprova decisões nem executa ações; abra a sessão "
+                "para continuar pelo fluxo governado."
+            )
+            actions = ({"type": "open_session", "session_id": str(session.session_id)},)
+        return {
+            "response": response,
+            "session_id": str(session.session_id),
+            "cognitive_state": state,
+            "ui_actions": actions,
+            "unavailable": False,
+            "incomplete_context": state == OperationalSessionStatus.CREATED.value,
+        }
+
     def get_session(
         self, principal: AuthenticatedPrincipal, session_id: UUID
     ) -> OperationalSessionView:
