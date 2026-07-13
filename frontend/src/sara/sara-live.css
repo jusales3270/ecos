@@ -1,0 +1,26 @@
+:root { --sh-amber:#ff9e2c; --sh-ember:#ff7a00; --sh-hot:#ffd591; }
+.sh-root { position:relative; z-index:70; }
+.sh-summon { position:fixed; right:28px; bottom:32px; width:64px; height:64px; z-index:70; border:0; background:transparent; color:var(--sh-hot); display:grid; place-items:center; }
+.sh-halo { position:absolute; inset:0; border:1px solid rgba(255,158,44,.48); border-radius:50%; animation:sh-pulse 2.6s ease-in-out infinite; }
+.sh-spark { width:12px; height:12px; border-radius:50%; background:var(--sh-amber); box-shadow:0 0 18px 4px rgba(255,158,44,.8),0 0 60px 18px rgba(255,122,0,.3); }
+.sh-label { position:absolute; top:72px; font:9px var(--font-mono,monospace); color:var(--sh-amber); }
+.sh-holo { position:fixed; inset:0; z-index:70; pointer-events:none; }
+.sh-dim { position:absolute; inset:0; pointer-events:auto; background:radial-gradient(ellipse at center,rgba(8,5,1,.9),rgba(0,0,0,.97)); }
+.sh-stage { position:absolute; left:50%; top:44%; width:min(70vmin,680px); aspect-ratio:1; transform:translate(-50%,-50%); pointer-events:auto; touch-action:none; user-select:none; cursor:grab; }
+.sh-mini .sh-stage { width:120px; transform:none; cursor:move; background:rgba(8,5,1,.55); border:1px solid rgba(255,158,44,.2); border-radius:6px; box-shadow:0 8px 30px rgba(0,0,0,.45); }
+.sh-orbit,.sh-canvas { width:100%; height:100%; display:block; }.sh-orbit { transition:transform .08s linear; }
+.sh-name { position:absolute; inset:0; display:grid; place-content:center; text-align:center; pointer-events:none; color:var(--sh-hot); text-shadow:0 0 22px var(--sh-amber); }
+.sh-name strong { font:16px var(--font-mono,monospace); }.sh-name span { margin-top:8px; font:8px var(--font-mono,monospace); color:rgba(255,158,44,.72); }
+.sh-mini .sh-name strong { font-size:9px; }.sh-mini .sh-name span { display:none; }
+.sh-tools { position:absolute; right:28px; top:24px; display:flex; gap:8px; pointer-events:auto; }
+.sh-tools button,.sh-console button { width:40px; height:40px; display:grid; place-items:center; border:1px solid rgba(255,158,44,.35); border-radius:50%; color:var(--sh-hot); background:rgba(0,0,0,.45); }
+.sh-tools svg,.sh-console svg { width:17px; }.sh-tools button:hover,.sh-console button:hover { background:rgba(255,158,44,.12); border-color:var(--sh-amber); }
+.sh-caption { position:absolute; left:50%; bottom:17vh; width:min(760px,86vw); transform:translateX(-50%); text-align:center; color:#f8edda; pointer-events:none; }
+.sh-caption span,.sh-status { font:9px var(--font-mono,monospace); color:rgba(255,158,44,.72); }.sh-caption p { font-size:clamp(16px,2vw,22px); line-height:1.55; }
+.sh-status { position:absolute; left:30px; bottom:30px; display:flex; gap:10px; align-items:center; }.sh-status i { width:6px; height:6px; border-radius:50%; background:var(--sh-amber); box-shadow:0 0 8px var(--sh-amber); }
+.sh-console { position:absolute; left:50%; bottom:6vh; transform:translateX(-50%); width:min(620px,90vw); display:flex; align-items:center; gap:10px; pointer-events:auto; }
+.sh-console label { flex:1; }.sh-console input { width:100%; min-height:42px; padding:0 8px; border:0; border-bottom:1px solid rgba(255,158,44,.4); background:transparent; color:#f8edda; outline:none; }.sh-console input:focus { border-color:var(--sh-hot); }
+.sh-root button:focus-visible,.sh-root input:focus-visible { outline:2px solid var(--sh-hot); outline-offset:3px; }
+@keyframes sh-pulse { 50% { transform:scale(1.14); opacity:.7; } }
+@media (prefers-reduced-motion:reduce) { .sh-halo { animation:none; } }
+@media (max-width:640px) { .sh-stage { width:min(96vw,520px); top:39%; }.sh-caption { bottom:25vh; }.sh-console { bottom:8vh; flex-wrap:wrap; }.sh-console label { order:-1; flex-basis:100%; }.sh-status { top:20px; bottom:auto; }.sh-mini .sh-stage { width:104px; } }

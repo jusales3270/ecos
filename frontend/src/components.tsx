@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import { useAuth } from "./auth";
+import { SaraPresenceLayer } from "./sara/SaraPresenceLayer";
 import type { EventRecord, Overview, VersionInfo } from "./types";
 
 type NavItem = {
@@ -189,7 +190,7 @@ export function AppShell() {
 }
 
 export function SaraPresenceMount() {
-  return <div id="sara-presence-mount" aria-hidden="true" />;
+  return <div id="sara-presence-mount"><SaraPresenceLayer /></div>;
 }
 
 function SystemTopBar({
