@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -1560,11 +1561,14 @@ def test_postgres_checkpoint_repository_round_trip(
     assert checkpoint is not None
     monkeypatch.setenv("ECOS_DATABASE_URL", TEST_DATABASE_URL)
     config = Config("alembic.ini")
-    alembic_command.upgrade(config, "head")
-    repository = PostgresRuntimeCheckpointRepository(
-        TEST_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-    )
+    runtime_logger = logging.getLogger("ecos.runtime.service")
+    original_disabled = runtime_logger.disabled
     try:
+        alembic_command.upgrade(config, "head")
+        assert runtime_logger.disabled is False
+        repository = PostgresRuntimeCheckpointRepository(
+            TEST_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
         stored = repository.save(checkpoint, expected_version=None)
         assert (
             repository.get(checkpoint.organization_id, checkpoint.session_id) == stored
@@ -1572,6 +1576,7 @@ def test_postgres_checkpoint_repository_round_trip(
         with pytest.raises(RuntimeCheckpointScopeError):
             repository.get(uuid4(), checkpoint.session_id)
     finally:
+        runtime_logger.disabled = original_disabled
         alembic_command.downgrade(config, "base")
 
 
