@@ -5,6 +5,10 @@ from ecos.operational.models import (
     ExecutionView,
     OperationalSessionView,
     OrganizationOverview,
+    SaraInteractionView,
+    SaraRuntimeView,
+    SaraSessionStateView,
+    SaraUiAction,
 )
 from ecos.operational.repository import (
     InMemoryOperationalRepository,
@@ -20,4 +24,8 @@ __all__ = [
     "InMemoryOperationalRepository",
     "OperationalSessionView",
     "OrganizationOverview",
+    "SaraInteractionView",
+    "SaraRuntimeView",
+    "SaraSessionStateView",
+    "SaraUiAction",
 ]

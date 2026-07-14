@@ -19,6 +19,17 @@ class SessionRepository(ABC):
         """Create a managed session."""
         raise NotImplementedError
 
+    def create_if_absent(self, session: ManagedSession) -> tuple[ManagedSession, bool]:
+        """Create once or return the existing session.
+
+        Persistent and in-memory production repositories override this with an
+        atomic implementation.
+        """
+        existing = self.get(session.session.id)
+        if existing is not None:
+            return existing, False
+        return self.create(session), True
+
     @abstractmethod
     def get(self, session_id: UUID) -> ManagedSession | None:
         """Get a managed session by cognitive session identifier."""

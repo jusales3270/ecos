@@ -38,20 +38,36 @@ Estados visuais: `idle`, `listening`, `thinking`, `speaking`, `offline`, `error`
 
 ```json
 {
-  "response": "texto simples",
+  "interaction_id": "UUID",
   "session_id": "UUID",
-  "cognitive_state": "created",
-  "ui_actions": [{ "type": "open_session", "session_id": "UUID" }],
-  "unavailable": false,
-  "incomplete_context": true
+  "response": "texto simples",
+  "runtime": {
+    "state": "waiting_approval",
+    "lifecycle_status": "PAUSED",
+    "stage": "GOVERNANCE",
+    "active_engine": "governance",
+    "progress": 0.8,
+    "version": 1,
+    "updated_at": "2026-07-13T12:00:00Z",
+    "error_code": null
+  },
+  "ui_actions": [{ "type": "open_approvals", "session_id": null }],
+  "incomplete_context": false,
+  "unavailable": false
 }
 ```
 
-Sem `session_id`, o serviço de aplicação cria uma sessão organizacional. Com ID, ele exige que a sessão pertença à organização autenticada e registra timeline/evento sem copiar o conteúdo da mensagem. O endpoint não chama provider diretamente e não inicia cognição ou execução. Um provider indisponível não afeta o registro inicial: a continuação ocorre no pipeline governado já existente.
+Sem `session_id`, o serviço cria a sessão operacional e uma `CognitiveSession` com o mesmo UUID e inicia o runtime autenticado até o gate real de governança. Com ID, exige a organização autenticada e não reinicia um runtime que já possua checkpoint. A SARA não aprova nem inicia a Execution Layer; histórico continua limitado à interface e não concede identidade ou autoridade.
+
+Antes de chamar Planner ou Orchestrator, o runtime adquire atomicamente um claim persistente por `organization_id + session_id`. Em PostgreSQL, a aquisição usa inserção com conflito controlado e bloqueio da linha; workers perdedores apenas observam o estado confirmado. Claims que falham antes do planejamento ficam marcados como `failed` e podem ser readquiridos com incremento de tentativa. A criação da `CognitiveSession` também é atômica e só é idempotente quando sessão, organização e objetivo coincidem.
+
+`GET /api/v1/sara/sessions/{session_id}/state` retorna apenas a projeção segura confirmada por `SessionService` e pelo checkpoint. A resposta usa `ETag`, aceita `If-None-Match` com retorno `304` e fornece `Retry-After` para estados não terminais. Histórico, prompts, artefatos, resultados internos e mensagens de providers não são expostos.
+
+O frontend conserva o último runtime confirmado, reutiliza o `ETag` em `If-None-Match` e agenda a próxima consulta exclusivamente pelo `Retry-After`. Respostas `304` não alteram o estado visual. O polling é cancelado ao desmontar, trocar de sessão ou receber `completed`/`error`; respostas atrasadas de sessões anteriores são descartadas.
 
 ## Ações permitidas
 
-A whitelist aceita abertura de sessão, aprovações, execuções, memória, Knowledge Graph, governança e observabilidade; navegação apenas para rotas internas conhecidas; fechamento de painéis; e minimização da SARA. O frontend rejeita URL externa, JavaScript, seletor DOM, shell e qualquer tipo desconhecido. Aprovação e alteração de dados nunca são ações de UI da SARA.
+A API da SARA emite somente abertura de sessão, aprovações ou execuções, além de fechamento e minimização de painéis. O frontend rejeita URL externa, JavaScript, seletor DOM, shell e qualquer tipo desconhecido. Aprovação, rejeição, início de execução e alteração de dados nunca são ações da SARA.
 
 ## Persistência e segurança
 

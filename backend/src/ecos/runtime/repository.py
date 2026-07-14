@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from threading import RLock
 from typing import Any, Self
@@ -18,6 +19,10 @@ from ecos.planner import CognitivePlan
 def utc_now() -> datetime:
     """Return a timezone-aware UTC timestamp."""
     return datetime.now(UTC)
+
+
+Clock = Callable[[], datetime]
+DEFAULT_START_CLAIM_LEASE = timedelta(seconds=30)
 
 
 class RuntimeCheckpointError(RuntimeError):
@@ -36,6 +41,18 @@ class RuntimeCheckpointConflictError(RuntimeCheckpointError):
     """Raised when optimistic checkpoint persistence detects a stale write."""
 
 
+class RuntimeAlreadyStartedError(RuntimeCheckpointConflictError):
+    """Raised when another request already owns or completed runtime startup."""
+
+
+class RuntimeStartLeaseLostError(RuntimeCheckpointConflictError):
+    """Raised when a worker no longer owns a live runtime startup lease."""
+
+
+class RuntimeStartHeartbeatShutdownError(RuntimeCheckpointError):
+    """Raised when a runtime startup heartbeat does not stop within its deadline."""
+
+
 class RuntimeCheckpointStatus(StrEnum):
     """Persisted lifecycle states for an authenticated runtime invocation."""
 
@@ -43,6 +60,54 @@ class RuntimeCheckpointStatus(StrEnum):
     EXECUTING = "executing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class RuntimeStartClaimStatus(StrEnum):
+    """Persistent startup ownership states for an authenticated runtime."""
+
+    INITIALIZING = "initializing"
+    STARTED = "started"
+    FAILED = "failed"
+
+
+class RuntimeStartClaim(BaseModel):
+    """Organization-scoped atomic claim acquired before planning begins."""
+
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    organization_id: UUID
+    user_id: UUID
+    correlation_id: UUID
+    objective: str = Field(min_length=1, max_length=200)
+    status: RuntimeStartClaimStatus
+    attempt: int = Field(default=1, ge=1)
+    lease_expires_at: datetime
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_timestamps(self) -> Self:
+        """Require unambiguous timezone-aware claim timestamps."""
+        timestamps = (self.lease_expires_at, self.created_at, self.updated_at)
+        if any(
+            value.tzinfo is None or value.utcoffset() is None for value in timestamps
+        ):
+            raise ValueError("runtime start claim timestamps must be timezone-aware")
+        if self.updated_at < self.created_at:
+            raise ValueError("runtime start claim updated_at precedes created_at")
+        if self.lease_expires_at <= self.created_at:
+            raise ValueError("runtime start claim lease must expire after creation")
+        return self
+
+
+class RuntimeStartAcquisition(BaseModel):
+    """Result of an atomic startup claim attempt."""
+
+    model_config = ConfigDict(frozen=True)
+
+    claim: RuntimeStartClaim
+    acquired: bool
 
 
 class ArtifactEnvelope(BaseModel):
@@ -152,13 +217,71 @@ class RuntimeCheckpointRepository(ABC):
         """Create or update a checkpoint using optimistic version control."""
         raise NotImplementedError
 
+    @abstractmethod
+    def acquire_start_claim(
+        self,
+        *,
+        organization_id: UUID,
+        session_id: UUID,
+        user_id: UUID,
+        correlation_id: UUID,
+        objective: str,
+    ) -> RuntimeStartAcquisition:
+        """Atomically acquire startup ownership before Planner is called."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def start_claim_lease_duration(self) -> timedelta:
+        """Return the configured duration used when acquiring and renewing leases."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def renew_start_claim(
+        self,
+        *,
+        organization_id: UUID,
+        session_id: UUID,
+        expected_attempt: int,
+        expected_status: RuntimeStartClaimStatus,
+    ) -> RuntimeStartClaim:
+        """Atomically renew a live startup claim owned by the caller."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def mark_start_claim(
+        self,
+        *,
+        organization_id: UUID,
+        session_id: UUID,
+        expected_attempt: int,
+        expected_status: RuntimeStartClaimStatus,
+        status: RuntimeStartClaimStatus,
+    ) -> RuntimeStartClaim:
+        """Finalize a claim using optimistic attempt and status control."""
+        raise NotImplementedError
+
 
 class InMemoryRuntimeCheckpointRepository(RuntimeCheckpointRepository):
     """Thread-safe in-memory checkpoint repository for tests and local runtime."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        lease_duration: timedelta = DEFAULT_START_CLAIM_LEASE,
+        clock: Clock = utc_now,
+    ) -> None:
+        if lease_duration <= timedelta(0):
+            raise ValueError("runtime start claim lease duration must be positive")
         self._checkpoints: dict[UUID, RuntimeCheckpoint] = {}
+        self._start_claims: dict[UUID, RuntimeStartClaim] = {}
         self._lock = RLock()
+        self._lease_duration = lease_duration
+        self._clock = clock
+
+    @property
+    def start_claim_lease_duration(self) -> timedelta:
+        return self._lease_duration
 
     def get(self, organization_id: UUID, session_id: UUID) -> RuntimeCheckpoint | None:
         with self._lock:
@@ -196,3 +319,142 @@ class InMemoryRuntimeCheckpointRepository(RuntimeCheckpointRepository):
             stored = checkpoint.model_copy(deep=True)
             self._checkpoints[checkpoint.session_id] = stored
             return stored.model_copy(deep=True)
+
+    def acquire_start_claim(
+        self,
+        *,
+        organization_id: UUID,
+        session_id: UUID,
+        user_id: UUID,
+        correlation_id: UUID,
+        objective: str,
+    ) -> RuntimeStartAcquisition:
+        with self._lock:
+            now = self._now()
+            current = self._start_claims.get(session_id)
+            if current is not None:
+                if current.organization_id != organization_id:
+                    raise RuntimeCheckpointScopeError(
+                        "runtime start claim is not available"
+                    )
+                if current.objective != objective:
+                    raise RuntimeCheckpointConflictError(
+                        "runtime start claim objective mismatch"
+                    )
+                recoverable = current.status is RuntimeStartClaimStatus.FAILED or (
+                    current.status is RuntimeStartClaimStatus.INITIALIZING
+                    and current.lease_expires_at <= now
+                )
+                if not recoverable:
+                    return RuntimeStartAcquisition(
+                        claim=current.model_copy(deep=True),
+                        acquired=False,
+                    )
+                claim = current.model_copy(
+                    update={
+                        "user_id": user_id,
+                        "correlation_id": correlation_id,
+                        "status": RuntimeStartClaimStatus.INITIALIZING,
+                        "attempt": current.attempt + 1,
+                        "lease_expires_at": now + self._lease_duration,
+                        "updated_at": now,
+                    }
+                )
+            else:
+                claim = RuntimeStartClaim(
+                    session_id=session_id,
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    correlation_id=correlation_id,
+                    objective=objective,
+                    status=RuntimeStartClaimStatus.INITIALIZING,
+                    lease_expires_at=now + self._lease_duration,
+                    created_at=now,
+                    updated_at=now,
+                )
+            self._start_claims[session_id] = claim
+            return RuntimeStartAcquisition(
+                claim=claim.model_copy(deep=True),
+                acquired=True,
+            )
+
+    def mark_start_claim(
+        self,
+        *,
+        organization_id: UUID,
+        session_id: UUID,
+        expected_attempt: int,
+        expected_status: RuntimeStartClaimStatus,
+        status: RuntimeStartClaimStatus,
+    ) -> RuntimeStartClaim:
+        with self._lock:
+            now = self._now()
+            current = self._start_claims.get(session_id)
+            if current is None:
+                raise RuntimeStartLeaseLostError("runtime start claim is missing")
+            if current.organization_id != organization_id:
+                raise RuntimeCheckpointScopeError(
+                    "runtime start claim is not available"
+                )
+            if current.attempt != expected_attempt:
+                raise RuntimeStartLeaseLostError("runtime start claim attempt conflict")
+            if current.status is not expected_status:
+                raise RuntimeStartLeaseLostError("runtime start claim status conflict")
+            if (
+                expected_status is not RuntimeStartClaimStatus.INITIALIZING
+                or status
+                not in {
+                    RuntimeStartClaimStatus.STARTED,
+                    RuntimeStartClaimStatus.FAILED,
+                }
+            ):
+                raise RuntimeCheckpointConflictError(
+                    "invalid runtime start claim transition"
+                )
+            if current.lease_expires_at <= now:
+                raise RuntimeStartLeaseLostError("runtime start claim lease expired")
+            updated = current.model_copy(update={"status": status, "updated_at": now})
+            self._start_claims[session_id] = updated
+            return updated.model_copy(deep=True)
+
+    def renew_start_claim(
+        self,
+        *,
+        organization_id: UUID,
+        session_id: UUID,
+        expected_attempt: int,
+        expected_status: RuntimeStartClaimStatus,
+    ) -> RuntimeStartClaim:
+        if expected_status is not RuntimeStartClaimStatus.INITIALIZING:
+            raise RuntimeCheckpointConflictError(
+                "only initializing runtime start claims can be renewed"
+            )
+        with self._lock:
+            now = self._now()
+            current = self._start_claims.get(session_id)
+            if current is None:
+                raise RuntimeStartLeaseLostError("runtime start claim is missing")
+            if current.organization_id != organization_id:
+                raise RuntimeCheckpointScopeError(
+                    "runtime start claim is not available"
+                )
+            if current.attempt != expected_attempt:
+                raise RuntimeStartLeaseLostError("runtime start claim attempt conflict")
+            if current.status is not expected_status:
+                raise RuntimeStartLeaseLostError("runtime start claim status conflict")
+            if current.lease_expires_at <= now:
+                raise RuntimeStartLeaseLostError("runtime start claim lease expired")
+            renewed = current.model_copy(
+                update={
+                    "lease_expires_at": now + self._lease_duration,
+                    "updated_at": now,
+                }
+            )
+            self._start_claims[session_id] = renewed
+            return renewed.model_copy(deep=True)
+
+    def _now(self) -> datetime:
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("runtime start claim clock must be timezone-aware")
+        return now

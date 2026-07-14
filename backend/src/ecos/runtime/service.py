@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from threading import Event as ThreadEvent
+from threading import Lock, Thread
+from types import TracebackType
 from uuid import UUID
 
 from ecos.domain import SessionStage
@@ -34,12 +38,17 @@ from ecos.runtime.models import (
     StartExistingSessionCommand,
 )
 from ecos.runtime.repository import (
+    RuntimeAlreadyStartedError,
     RuntimeCheckpoint,
     RuntimeCheckpointConflictError,
     RuntimeCheckpointNotFoundError,
     RuntimeCheckpointRepository,
     RuntimeCheckpointScopeError,
     RuntimeCheckpointStatus,
+    RuntimeStartClaim,
+    RuntimeStartClaimStatus,
+    RuntimeStartHeartbeatShutdownError,
+    RuntimeStartLeaseLostError,
 )
 from ecos.session import (
     ManagedSession,
@@ -52,6 +61,145 @@ from ecos.session import (
 )
 
 Clock = Callable[[], datetime]
+logger = logging.getLogger(__name__)
+ExceptionInfo = tuple[type[BaseException], BaseException, TracebackType | None]
+
+
+def _exception_info(error: BaseException) -> ExceptionInfo:
+    """Return logging exc_info for exactly the supplied exception."""
+    return type(error), error, error.__traceback__
+
+
+class _RuntimeStartClaimHeartbeat:
+    """Maintain and fence one runtime startup claim without leaking a thread."""
+
+    def __init__(
+        self,
+        *,
+        repository: RuntimeCheckpointRepository,
+        organization_id: UUID,
+        session_id: UUID,
+        attempt: int,
+        interval: timedelta,
+        shutdown_timeout: timedelta,
+    ) -> None:
+        self._repository = repository
+        self._organization_id = organization_id
+        self._session_id = session_id
+        self._attempt = attempt
+        self._interval_seconds = interval.total_seconds()
+        self._shutdown_timeout_seconds = shutdown_timeout.total_seconds()
+        self._stop = ThreadEvent()
+        self._operation_lock = Lock()
+        self._failure_lock = Lock()
+        self._failure: Exception | None = None
+        self._thread = Thread(
+            target=self._run,
+            name=f"runtime-start-heartbeat-{session_id}",
+            daemon=False,
+        )
+
+    @property
+    def failure(self) -> Exception | None:
+        with self._failure_lock:
+            return self._failure
+
+    def __enter__(self) -> _RuntimeStartClaimHeartbeat:
+        self._thread.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, traceback
+        try:
+            self.stop()
+        except RuntimeStartHeartbeatShutdownError as shutdown_error:
+            logger.error(
+                "runtime start claim heartbeat shutdown timed out",
+                exc_info=_exception_info(shutdown_error),
+                extra={
+                    "organization_id": str(self._organization_id),
+                    "session_id": str(self._session_id),
+                    "attempt": self._attempt,
+                },
+            )
+            if exc_value is None:
+                raise
+
+    def stop(self) -> None:
+        self._stop.set()
+        if not self._thread.is_alive():
+            return
+        self._thread.join(timeout=self._shutdown_timeout_seconds)
+        if self._thread.is_alive():
+            raise RuntimeStartHeartbeatShutdownError(
+                "runtime start claim heartbeat did not stop before its deadline"
+            )
+
+    def fence(self) -> RuntimeStartClaim:
+        """Synchronously prove and extend ownership before a stage boundary."""
+        self._raise_failure()
+        with self._operation_lock:
+            self._raise_failure()
+            return self._renew()
+
+    def mark_started(self) -> RuntimeStartClaim:
+        """Fence and finalize STARTED while excluding the heartbeat thread."""
+        self._raise_failure()
+        with self._operation_lock:
+            self._raise_failure()
+            self._renew()
+            claim = self._repository.mark_start_claim(
+                organization_id=self._organization_id,
+                session_id=self._session_id,
+                expected_attempt=self._attempt,
+                expected_status=RuntimeStartClaimStatus.INITIALIZING,
+                status=RuntimeStartClaimStatus.STARTED,
+            )
+            self._stop.set()
+            return claim
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            try:
+                with self._operation_lock:
+                    if self._stop.is_set():
+                        return
+                    self._renew()
+            except Exception as error:
+                with self._failure_lock:
+                    self._failure = error
+                self._stop.set()
+                return
+
+    def _renew(self) -> RuntimeStartClaim:
+        try:
+            return self._repository.renew_start_claim(
+                organization_id=self._organization_id,
+                session_id=self._session_id,
+                expected_attempt=self._attempt,
+                expected_status=RuntimeStartClaimStatus.INITIALIZING,
+            )
+        except RuntimeStartLeaseLostError:
+            raise
+        except Exception as error:
+            raise RuntimeStartLeaseLostError(
+                "runtime start claim heartbeat failed"
+            ) from error
+
+    def _raise_failure(self) -> None:
+        failure = self.failure
+        if failure is None:
+            return
+        if isinstance(failure, RuntimeStartLeaseLostError):
+            raise failure
+        raise RuntimeStartLeaseLostError(
+            "runtime start claim heartbeat failed"
+        ) from failure
 
 
 class AuthenticatedRuntimeService:
@@ -66,14 +214,33 @@ class AuthenticatedRuntimeService:
         governance_engine: GovernanceEngine,
         checkpoint_repository: RuntimeCheckpointRepository,
         artifact_codec: RuntimeArtifactCodec,
+        start_claim_heartbeat_interval: timedelta = timedelta(seconds=10),
+        start_claim_heartbeat_shutdown_timeout: timedelta = timedelta(seconds=5),
         clock: Clock = lambda: datetime.now(UTC),
     ) -> None:
+        if start_claim_heartbeat_interval <= timedelta(0):
+            raise ValueError("runtime start claim heartbeat interval must be positive")
+        if (
+            start_claim_heartbeat_interval
+            >= checkpoint_repository.start_claim_lease_duration
+        ):
+            raise ValueError(
+                "runtime start claim heartbeat must be shorter than its lease"
+            )
+        if start_claim_heartbeat_shutdown_timeout <= timedelta(0):
+            raise ValueError(
+                "runtime start claim heartbeat shutdown timeout must be positive"
+            )
         self._session_service = session_service
         self._planner_service = planner_service
         self._orchestrator_service = orchestrator_service
         self._governance_engine = governance_engine
         self._checkpoints = checkpoint_repository
         self._codec = artifact_codec
+        self._start_claim_heartbeat_interval = start_claim_heartbeat_interval
+        self._start_claim_heartbeat_shutdown_timeout = (
+            start_claim_heartbeat_shutdown_timeout
+        )
         self._clock = clock
 
     def start_existing_session(
@@ -86,53 +253,126 @@ class AuthenticatedRuntimeService:
             self._checkpoints.get(command.organization_id, command.session_id)
             is not None
         ):
-            raise RuntimeCheckpointConflictError(
-                "runtime checkpoint already exists for session"
-            )
-        plan = self._planner_service.create_plan(
-            PlannerInput(
-                session_id=command.session_id,
-                organization_id=command.organization_id,
-                user_id=command.user_id,
-                objective=session.session.objective,
-                description=session.session.objective.description,
-                priority=session.session.objective.priority,
-                desired_outcome="Produce and execute a governed dry-run plan.",
-                constraints=("Execution requires explicit human approval",),
-                resources_available=("runtime", "memory.dry_run"),
-                domains=("operations", "risk"),
-                context_available=True,
-                execution_requested=True,
-                stakeholders_count=2,
-                impact="high",
-                reversible=True,
-                metadata={
-                    "runtime": True,
-                    "authenticated": True,
-                    "user_id": str(command.user_id),
-                },
-                correlation_id=command.correlation_id,
-            )
+            raise RuntimeAlreadyStartedError("runtime already started for session")
+        acquisition = self._checkpoints.acquire_start_claim(
+            organization_id=command.organization_id,
+            session_id=command.session_id,
+            user_id=command.user_id,
+            correlation_id=command.correlation_id,
+            objective=command.objective,
         )
-        self._begin_session(session)
-        session = self._scoped_session(command.organization_id, command.session_id)
-        result = self._orchestrator_service.execute(
-            self._orchestration_input(command, session, plan)
+        if not acquisition.acquired:
+            raise RuntimeAlreadyStartedError(
+                "runtime startup is already owned for session"
+            )
+        checkpoint_stored = False
+        result: OrchestrationResult | None = None
+        heartbeat = _RuntimeStartClaimHeartbeat(
+            repository=self._checkpoints,
+            organization_id=command.organization_id,
+            session_id=command.session_id,
+            attempt=acquisition.claim.attempt,
+            interval=self._start_claim_heartbeat_interval,
+            shutdown_timeout=self._start_claim_heartbeat_shutdown_timeout,
         )
-        checkpoint = self._checkpoint_from_result(command, plan, result, version=1)
-        if result.status is PipelineExecutionStatus.WAITING_APPROVAL:
-            self._record_pause(command.organization_id, command.session_id)
         try:
-            stored = self._checkpoints.save(checkpoint, expected_version=None)
-        except Exception:
-            if result.status is PipelineExecutionStatus.WAITING_APPROVAL:
+            with heartbeat:
+                heartbeat.fence()
+                plan = self._planner_service.create_plan(
+                    PlannerInput(
+                        session_id=command.session_id,
+                        organization_id=command.organization_id,
+                        user_id=command.user_id,
+                        objective=session.session.objective,
+                        description=session.session.objective.description,
+                        priority=session.session.objective.priority,
+                        desired_outcome="Produce and execute a governed dry-run plan.",
+                        constraints=("Execution requires explicit human approval",),
+                        resources_available=("runtime", "memory.dry_run"),
+                        domains=("operations", "risk"),
+                        context_available=True,
+                        execution_requested=True,
+                        stakeholders_count=2,
+                        impact="high",
+                        reversible=True,
+                        metadata={
+                            "runtime": True,
+                            "authenticated": True,
+                            "user_id": str(command.user_id),
+                        },
+                        correlation_id=command.correlation_id,
+                    )
+                )
+                heartbeat.fence()
+                self._begin_session(session)
+                session = self._scoped_session(
+                    command.organization_id, command.session_id
+                )
+                heartbeat.fence()
+                result = self._orchestrator_service.execute(
+                    self._orchestration_input(command, session, plan)
+                )
+                heartbeat.fence()
+                checkpoint = self._checkpoint_from_result(
+                    command, plan, result, version=1
+                )
+                if result.status is PipelineExecutionStatus.WAITING_APPROVAL:
+                    self._record_pause(command.organization_id, command.session_id)
+                heartbeat.fence()
+                stored = self._checkpoints.save(checkpoint, expected_version=None)
+                checkpoint_stored = True
+                heartbeat.mark_started()
+        except Exception as primary_error:
+            heartbeat_failure = heartbeat.failure
+            if heartbeat_failure is not None:
+                logger.error(
+                    "runtime start claim heartbeat failed during startup",
+                    exc_info=_exception_info(heartbeat_failure),
+                    extra={
+                        "organization_id": str(command.organization_id),
+                        "session_id": str(command.session_id),
+                        "attempt": acquisition.claim.attempt,
+                    },
+                )
+            if not checkpoint_stored:
+                try:
+                    self._checkpoints.mark_start_claim(
+                        organization_id=command.organization_id,
+                        session_id=command.session_id,
+                        expected_attempt=acquisition.claim.attempt,
+                        expected_status=RuntimeStartClaimStatus.INITIALIZING,
+                        status=RuntimeStartClaimStatus.FAILED,
+                    )
+                except Exception as failure_recording_error:
+                    logger.error(
+                        "failed to record runtime startup claim failure",
+                        exc_info=_exception_info(failure_recording_error),
+                        extra={
+                            "organization_id": str(command.organization_id),
+                            "session_id": str(command.session_id),
+                            "attempt": acquisition.claim.attempt,
+                            "primary_error": type(primary_error).__name__,
+                        },
+                    )
+            if (
+                result is not None
+                and result.status is PipelineExecutionStatus.WAITING_APPROVAL
+            ):
                 try:
                     self._record_initial_checkpoint_failure(
                         command.organization_id,
                         command.session_id,
                     )
-                except Exception:
-                    pass
+                except Exception as compensation_error:
+                    logger.error(
+                        "failed to compensate runtime startup session state",
+                        exc_info=_exception_info(compensation_error),
+                        extra={
+                            "organization_id": str(command.organization_id),
+                            "session_id": str(command.session_id),
+                            "primary_error": type(primary_error).__name__,
+                        },
+                    )
             raise
         return self._result(stored, result.status)
 

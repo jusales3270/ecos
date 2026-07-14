@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from threading import Event
+from threading import enumerate as enumerate_threads
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,16 +32,21 @@ from ecos.runtime import (
     InvalidArtifactError,
     PostgresRuntimeCheckpointRepository,
     ResumeSessionCommand,
+    RuntimeAlreadyStartedError,
     RuntimeArtifactCodec,
     RuntimeCheckpoint,
     RuntimeCheckpointConflictError,
     RuntimeCheckpointNotFoundError,
     RuntimeCheckpointScopeError,
     RuntimeCheckpointStatus,
+    RuntimeStartClaimStatus,
+    RuntimeStartHeartbeatShutdownError,
+    RuntimeStartLeaseLostError,
     StartExistingSessionCommand,
     UnknownArtifactTypeError,
     UnknownArtifactVersionError,
 )
+from ecos.runtime.service import _RuntimeStartClaimHeartbeat
 from ecos.security import Role
 from ecos.session import (
     ManagedSession,
@@ -71,9 +79,10 @@ class CountingExecutor(EngineExecutor):
         return self.delegate.execute(context)
 
 
-@pytest.fixture
-def runtime_case() -> tuple[Container, ManagedSession, StartExistingSessionCommand]:
-    container = Container(settings=Settings())
+def _make_runtime_case(
+    settings: Settings | None = None,
+) -> tuple[Container, ManagedSession, StartExistingSessionCommand]:
+    container = Container(settings=settings or Settings())
     session_id = uuid4()
     correlation_id = uuid4()
     objective = Objective(
@@ -108,6 +117,172 @@ def runtime_case() -> tuple[Container, ManagedSession, StartExistingSessionComma
     return container, managed, command
 
 
+@pytest.fixture
+def runtime_case() -> tuple[Container, ManagedSession, StartExistingSessionCommand]:
+    return _make_runtime_case()
+
+
+def _heartbeat_threads(session_id: UUID) -> tuple[str, ...]:
+    prefix = f"runtime-start-heartbeat-{session_id}"
+    return tuple(thread.name for thread in enumerate_threads() if thread.name == prefix)
+
+
+def _heartbeat_for(
+    container: Container,
+    command: StartExistingSessionCommand,
+    *,
+    interval: timedelta = timedelta(milliseconds=1),
+    shutdown_timeout: timedelta = timedelta(milliseconds=10),
+) -> _RuntimeStartClaimHeartbeat:
+    repository = container.runtime_checkpoint_repository
+    acquisition = repository.acquire_start_claim(
+        organization_id=command.organization_id,
+        session_id=command.session_id,
+        user_id=command.user_id,
+        correlation_id=command.correlation_id,
+        objective=command.objective,
+    )
+    assert acquisition.acquired is True
+    return _RuntimeStartClaimHeartbeat(
+        repository=repository,
+        organization_id=command.organization_id,
+        session_id=command.session_id,
+        attempt=acquisition.claim.attempt,
+        interval=interval,
+        shutdown_timeout=shutdown_timeout,
+    )
+
+
+def test_heartbeat_stop_is_bounded_and_idempotent_after_normal_shutdown(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    container, _, command = runtime_case
+    heartbeat = _heartbeat_for(
+        container,
+        command,
+        interval=timedelta(seconds=1),
+    )
+
+    with caplog.at_level("ERROR", logger="ecos.runtime.service"):
+        heartbeat.__enter__()
+        heartbeat.stop()
+        heartbeat.stop()
+
+    assert _heartbeat_threads(command.session_id) == ()
+    assert "heartbeat shutdown" not in caplog.text
+
+
+def test_heartbeat_stop_returns_immediately_when_thread_already_finished(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container, _, command = runtime_case
+    repository = container.runtime_checkpoint_repository
+    renewal_finished = Event()
+
+    def fail_renewal(**_kwargs):
+        renewal_finished.set()
+        raise RuntimeStartLeaseLostError("renewal stopped")
+
+    monkeypatch.setattr(repository, "renew_start_claim", fail_renewal)
+    heartbeat = _heartbeat_for(container, command)
+    heartbeat.__enter__()
+    assert renewal_finished.wait(timeout=1)
+    heartbeat._thread.join(timeout=1)
+    assert _heartbeat_threads(command.session_id) == ()
+
+    heartbeat.stop()
+    heartbeat.stop()
+
+
+def test_blocked_renewal_shutdown_times_out_without_unbounded_wait(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    container, _, command = runtime_case
+    repository = container.runtime_checkpoint_repository
+    original_renew = repository.renew_start_claim
+    renewal_entered = Event()
+    release_renewal = Event()
+    renewal_finished = Event()
+
+    def blocking_renewal(**kwargs):
+        renewal_entered.set()
+        assert release_renewal.wait(timeout=2)
+        try:
+            return original_renew(**kwargs)
+        finally:
+            renewal_finished.set()
+
+    monkeypatch.setattr(repository, "renew_start_claim", blocking_renewal)
+    heartbeat = _heartbeat_for(container, command)
+
+    try:
+        with caplog.at_level("ERROR", logger="ecos.runtime.service"):
+            with pytest.raises(
+                RuntimeStartHeartbeatShutdownError,
+                match="did not stop",
+            ):
+                with heartbeat:
+                    assert renewal_entered.wait(timeout=1)
+    finally:
+        release_renewal.set()
+        assert renewal_finished.wait(timeout=1)
+        heartbeat.stop()
+
+    assert _heartbeat_threads(command.session_id) == ()
+    assert "heartbeat shutdown timed out" in caplog.text
+
+
+def test_primary_error_survives_shutdown_timeout_with_secondary_traceback(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    container, _, command = runtime_case
+    repository = container.runtime_checkpoint_repository
+    original_renew = repository.renew_start_claim
+    renewal_entered = Event()
+    release_renewal = Event()
+    renewal_finished = Event()
+    primary_error = RuntimeError("primary startup failure")
+
+    def blocking_renewal(**kwargs):
+        renewal_entered.set()
+        assert release_renewal.wait(timeout=2)
+        try:
+            return original_renew(**kwargs)
+        finally:
+            renewal_finished.set()
+
+    monkeypatch.setattr(repository, "renew_start_claim", blocking_renewal)
+    heartbeat = _heartbeat_for(container, command)
+
+    try:
+        with caplog.at_level("ERROR", logger="ecos.runtime.service"):
+            with pytest.raises(RuntimeError) as raised:
+                with heartbeat:
+                    assert renewal_entered.wait(timeout=1)
+                    raise primary_error
+    finally:
+        release_renewal.set()
+        assert renewal_finished.wait(timeout=1)
+        heartbeat.stop()
+
+    shutdown_record = next(
+        record
+        for record in caplog.records
+        if "heartbeat shutdown timed out" in record.getMessage()
+    )
+    assert raised.value is primary_error
+    assert shutdown_record.exc_info is not None
+    shutdown_error = shutdown_record.exc_info[1]
+    assert isinstance(shutdown_error, RuntimeStartHeartbeatShutdownError)
+    assert shutdown_record.exc_info[2] is shutdown_error.__traceback__
+
+
 def test_start_uses_received_session_scope_and_persists_typed_checkpoint(
     runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
 ) -> None:
@@ -132,6 +307,351 @@ def test_start_uses_received_session_scope_and_persists_typed_checkpoint(
     assert all(item.output.artifact_type != "Any" for item in checkpoint.stage_results)
     restored = checkpoint.model_validate(checkpoint.model_dump(mode="json"))
     assert restored == checkpoint
+
+
+def test_second_runtime_start_uses_specific_already_started_error(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+) -> None:
+    container, _, command = runtime_case
+    container.runtime_engine.start_existing_session(command)
+
+    with pytest.raises(RuntimeAlreadyStartedError, match="already started"):
+        container.runtime_engine.start_existing_session(command)
+
+
+def test_heartbeat_keeps_claim_owned_while_planner_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container, _, command = _make_runtime_case(
+        Settings(
+            runtime_start_claim_lease_seconds=0.05,
+            runtime_start_claim_heartbeat_seconds=0.005,
+        )
+    )
+    repository = container.runtime_checkpoint_repository
+    original_renew = repository.renew_start_claim
+    original_plan = container.planner_service.create_plan
+    planner_entered = Event()
+    enough_renewals = Event()
+    release_planner = Event()
+    renewals = 0
+
+    def count_renewals(**kwargs):
+        nonlocal renewals
+        claim = original_renew(**kwargs)
+        renewals += 1
+        if renewals >= 12:
+            enough_renewals.set()
+        return claim
+
+    def blocking_plan(planner_input):
+        planner_entered.set()
+        assert enough_renewals.wait(timeout=2)
+        assert release_planner.wait(timeout=2)
+        return original_plan(planner_input)
+
+    monkeypatch.setattr(repository, "renew_start_claim", count_renewals)
+    monkeypatch.setattr(container.planner_service, "create_plan", blocking_plan)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            container.runtime_engine.start_existing_session,
+            command,
+        )
+        assert planner_entered.wait(timeout=2)
+        assert enough_renewals.wait(timeout=2)
+        competing = repository.acquire_start_claim(
+            organization_id=command.organization_id,
+            session_id=command.session_id,
+            user_id=command.user_id,
+            correlation_id=uuid4(),
+            objective=command.objective,
+        )
+        release_planner.set()
+        future.result(timeout=2)
+
+    assert competing.acquired is False
+    assert renewals >= 12
+    assert _heartbeat_threads(command.session_id) == ()
+
+
+def test_heartbeat_keeps_claim_owned_while_orchestrator_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container, _, command = _make_runtime_case(
+        Settings(
+            runtime_start_claim_lease_seconds=0.05,
+            runtime_start_claim_heartbeat_seconds=0.005,
+        )
+    )
+    repository = container.runtime_checkpoint_repository
+    original_renew = repository.renew_start_claim
+    original_execute = container.orchestrator_service.execute
+    orchestrator_entered = Event()
+    enough_renewals = Event()
+    release_orchestrator = Event()
+    renewals = 0
+    renewals_at_entry = 0
+
+    def count_renewals(**kwargs):
+        nonlocal renewals
+        claim = original_renew(**kwargs)
+        renewals += 1
+        if orchestrator_entered.is_set() and renewals >= renewals_at_entry + 12:
+            enough_renewals.set()
+        return claim
+
+    def blocking_execute(orchestration_input):
+        nonlocal renewals_at_entry
+        renewals_at_entry = renewals
+        orchestrator_entered.set()
+        assert enough_renewals.wait(timeout=2)
+        assert release_orchestrator.wait(timeout=2)
+        return original_execute(orchestration_input)
+
+    monkeypatch.setattr(repository, "renew_start_claim", count_renewals)
+    monkeypatch.setattr(container.orchestrator_service, "execute", blocking_execute)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            container.runtime_engine.start_existing_session,
+            command,
+        )
+        assert orchestrator_entered.wait(timeout=2)
+        assert enough_renewals.wait(timeout=2)
+        competing = repository.acquire_start_claim(
+            organization_id=command.organization_id,
+            session_id=command.session_id,
+            user_id=command.user_id,
+            correlation_id=uuid4(),
+            objective=command.objective,
+        )
+        release_orchestrator.set()
+        future.result(timeout=2)
+
+    assert competing.acquired is False
+    assert _heartbeat_threads(command.session_id) == ()
+
+
+def test_heartbeat_stops_after_startup_failure(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container, _, command = runtime_case
+
+    def fail_plan(_):
+        raise RuntimeError("planner failed")
+
+    monkeypatch.setattr(container.planner_service, "create_plan", fail_plan)
+
+    with pytest.raises(RuntimeError, match="planner failed"):
+        container.runtime_engine.start_existing_session(command)
+
+    assert _heartbeat_threads(command.session_id) == ()
+
+
+def test_failed_claim_recording_is_observable_without_hiding_primary_error(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    container, _, command = runtime_case
+    repository = container.runtime_checkpoint_repository
+    primary_error = RuntimeError("primary planner failure")
+
+    def fail_plan(_):
+        raise primary_error
+
+    def fail_mark(**_kwargs):
+        raise RuntimeStartLeaseLostError("claim belongs to a newer attempt")
+
+    monkeypatch.setattr(container.planner_service, "create_plan", fail_plan)
+    monkeypatch.setattr(repository, "mark_start_claim", fail_mark)
+
+    with caplog.at_level("ERROR", logger="ecos.runtime.service"):
+        with pytest.raises(RuntimeError) as raised:
+            container.runtime_engine.start_existing_session(command)
+
+    assert raised.value is primary_error
+    failure_record = next(
+        record
+        for record in caplog.records
+        if "failed to record runtime startup claim failure" in record.getMessage()
+    )
+    assert failure_record.exc_info is not None
+    failure_error = failure_record.exc_info[1]
+    assert isinstance(failure_error, RuntimeStartLeaseLostError)
+    assert "newer attempt" in str(failure_error)
+    assert failure_record.exc_info[2] is failure_error.__traceback__
+
+
+def test_lease_loss_after_planner_prevents_orchestrator(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container, _, command = runtime_case
+    repository = container.runtime_checkpoint_repository
+    original_renew = repository.renew_start_claim
+    renewals = 0
+    orchestrator_calls = 0
+
+    def lose_after_planner(**kwargs):
+        nonlocal renewals
+        renewals += 1
+        if renewals == 2:
+            raise RuntimeStartLeaseLostError("lease recovered by another worker")
+        return original_renew(**kwargs)
+
+    def count_orchestrator(_):
+        nonlocal orchestrator_calls
+        orchestrator_calls += 1
+        raise AssertionError("orchestrator must not be called")
+
+    monkeypatch.setattr(repository, "renew_start_claim", lose_after_planner)
+    monkeypatch.setattr(container.orchestrator_service, "execute", count_orchestrator)
+
+    with pytest.raises(RuntimeStartLeaseLostError, match="another worker"):
+        container.runtime_engine.start_existing_session(command)
+
+    assert orchestrator_calls == 0
+
+
+def test_lease_loss_after_orchestrator_prevents_checkpoint_persistence(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container, _, command = runtime_case
+    repository = container.runtime_checkpoint_repository
+    original_renew = repository.renew_start_claim
+    original_save = repository.save
+    renewals = 0
+    saves = 0
+
+    def lose_after_orchestrator(**kwargs):
+        nonlocal renewals
+        renewals += 1
+        if renewals == 4:
+            raise RuntimeStartLeaseLostError("lease lost during orchestrator")
+        return original_renew(**kwargs)
+
+    def count_save(*args, **kwargs):
+        nonlocal saves
+        saves += 1
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "renew_start_claim", lose_after_orchestrator)
+    monkeypatch.setattr(repository, "save", count_save)
+
+    with pytest.raises(RuntimeStartLeaseLostError, match="during orchestrator"):
+        container.runtime_engine.start_existing_session(command)
+
+    assert saves == 0
+    assert (
+        container.authenticated_runtime_service.get_checkpoint(
+            command.organization_id, command.session_id
+        )
+        is None
+    )
+
+
+def test_background_heartbeat_failure_is_propagated(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    container, _, command = _make_runtime_case(
+        Settings(
+            runtime_start_claim_lease_seconds=0.1,
+            runtime_start_claim_heartbeat_seconds=0.01,
+        )
+    )
+    repository = container.runtime_checkpoint_repository
+    original_renew = repository.renew_start_claim
+    original_plan = container.planner_service.create_plan
+    heartbeat_failed = Event()
+    renewals = 0
+
+    def fail_background_renewal(**kwargs):
+        nonlocal renewals
+        renewals += 1
+        if renewals == 2:
+            heartbeat_failed.set()
+            raise RuntimeError("heartbeat persistence unavailable")
+        return original_renew(**kwargs)
+
+    def wait_for_heartbeat_failure(planner_input):
+        assert heartbeat_failed.wait(timeout=2)
+        return original_plan(planner_input)
+
+    monkeypatch.setattr(repository, "renew_start_claim", fail_background_renewal)
+    monkeypatch.setattr(
+        container.planner_service,
+        "create_plan",
+        wait_for_heartbeat_failure,
+    )
+
+    with caplog.at_level("ERROR", logger="ecos.runtime.service"):
+        with pytest.raises(RuntimeStartLeaseLostError) as captured:
+            container.runtime_engine.start_existing_session(command)
+
+    heartbeat_record = next(
+        record
+        for record in caplog.records
+        if "heartbeat failed during startup" in record.getMessage()
+    )
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert "heartbeat persistence unavailable" in str(captured.value.__cause__)
+    assert heartbeat_record.exc_info is not None
+    heartbeat_error = heartbeat_record.exc_info[1]
+    assert heartbeat_error is captured.value
+    logged_traceback = heartbeat_record.exc_info[2]
+    logged_frames: list[str] = []
+    while logged_traceback is not None:
+        logged_frames.append(logged_traceback.tb_frame.f_code.co_name)
+        logged_traceback = logged_traceback.tb_next
+    assert "_renew" in logged_frames
+    cause_traceback = heartbeat_error.__cause__.__traceback__
+    cause_frames: list[str] = []
+    while cause_traceback is not None:
+        cause_frames.append(cause_traceback.tb_frame.f_code.co_name)
+        cause_traceback = cause_traceback.tb_next
+    assert "fail_background_renewal" in cause_frames
+    assert _heartbeat_threads(command.session_id) == ()
+
+
+def test_checkpoint_saved_before_started_mark_failure_blocks_reexecution(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container, _, command = runtime_case
+    repository = container.runtime_checkpoint_repository
+    original_mark = repository.mark_start_claim
+    original_plan = container.planner_service.create_plan
+    planner_calls = 0
+
+    def count_plan(planner_input):
+        nonlocal planner_calls
+        planner_calls += 1
+        return original_plan(planner_input)
+
+    def fail_started_mark(**kwargs):
+        if kwargs["status"] is RuntimeStartClaimStatus.STARTED:
+            raise RuntimeStartLeaseLostError("started mark failed")
+        return original_mark(**kwargs)
+
+    monkeypatch.setattr(container.planner_service, "create_plan", count_plan)
+    monkeypatch.setattr(repository, "mark_start_claim", fail_started_mark)
+
+    with pytest.raises(RuntimeStartLeaseLostError, match="started mark failed"):
+        container.runtime_engine.start_existing_session(command)
+    checkpoint = container.authenticated_runtime_service.get_checkpoint(
+        command.organization_id, command.session_id
+    )
+    with pytest.raises(RuntimeAlreadyStartedError, match="already started"):
+        container.runtime_engine.start_existing_session(command)
+
+    assert checkpoint is not None
+    assert planner_calls == 1
+    assert _heartbeat_threads(command.session_id) == ()
 
 
 def test_initial_checkpoint_save_failure_marks_session_failed_with_audit(
@@ -169,6 +689,7 @@ def test_initial_checkpoint_save_failure_marks_session_failed_with_audit(
 def test_initial_compensation_failure_does_not_hide_persistence_error(
     runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     container, _, command = runtime_case
     service = container.authenticated_runtime_service
@@ -188,10 +709,21 @@ def test_initial_compensation_failure_does_not_hide_persistence_error(
         fail_compensation,
     )
 
-    with pytest.raises(RuntimeError) as raised:
-        container.runtime_engine.start_existing_session(command)
+    with caplog.at_level("ERROR", logger="ecos.runtime.service"):
+        with pytest.raises(RuntimeError) as raised:
+            container.runtime_engine.start_existing_session(command)
 
     assert raised.value is persistence_error
+    compensation_record = next(
+        record
+        for record in caplog.records
+        if "compensate runtime startup" in record.getMessage()
+    )
+    assert compensation_record.exc_info is not None
+    compensation_error = compensation_record.exc_info[1]
+    assert isinstance(compensation_error, RuntimeCheckpointConflictError)
+    assert "compensation failed" in str(compensation_error)
+    assert compensation_record.exc_info[2] is compensation_error.__traceback__
 
 
 def test_organization_is_required_and_cross_tenant_access_is_blocked(

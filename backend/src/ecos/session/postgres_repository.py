@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -68,6 +69,47 @@ class PostgresSessionRepository(SessionRepository):
             database.add(record)
             await database.commit()
         return managed
+
+    def create_if_absent(self, session: ManagedSession) -> tuple[ManagedSession, bool]:
+        return _run(self._create_if_absent(session))
+
+    async def _create_if_absent(
+        self, managed: ManagedSession
+    ) -> tuple[ManagedSession, bool]:
+        state = self._state_record(managed.state)
+        async with self._session_factory() as database:
+            inserted = await database.scalar(
+                insert(SessionRecord)
+                .values(
+                    id=managed.session.id,
+                    organization_id=managed.context.organization_id,
+                    managed_id=managed.id,
+                    session_data=managed.session.model_dump(mode="json"),
+                    context_data=managed.context.model_dump(mode="json"),
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
+                .returning(SessionRecord.id)
+            )
+            if inserted is not None:
+                await database.execute(
+                    insert(SessionStateRecord).values(
+                        id=state.id,
+                        session_id=state.session_id,
+                        lifecycle_status=state.lifecycle_status,
+                        current_stage=state.current_stage,
+                        active_engine=state.active_engine,
+                        progress=state.progress,
+                        last_error=state.last_error,
+                        updated_at=state.updated_at,
+                    )
+                )
+                await database.commit()
+                return managed, True
+            await database.commit()
+        existing = await self._get(managed.session.id)
+        if existing is None:
+            raise RuntimeError("cognitive session disappeared after atomic create")
+        return existing, False
 
     def get(self, session_id: UUID) -> ManagedSession | None:
         return _run(self._get(session_id))

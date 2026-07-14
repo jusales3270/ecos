@@ -39,8 +39,12 @@ usuário e correlação, inicia somente uma Cognitive Session já existente e pe
 um checkpoint tipado antes do gate humano. A retomada restaura estágios concluídos,
 registra decisões no Governance Engine e só alcança a Execution Layer depois de
 quorum humano válido. Configure `ECOS_RUNTIME_CHECKPOINT_REPOSITORY=postgres` para
-persistência durável; `memory` permanece o padrão local. Esse serviço ainda não é
-exposto pelos endpoints da SARA.
+persistência durável; `memory` permanece o padrão local. A lease de inicialização é
+configurada por `ECOS_RUNTIME_START_CLAIM_LEASE_SECONDS`, permitindo recuperar de
+forma atômica claims abandonados por workers interrompidos. O intervalo
+`ECOS_RUNTIME_START_CLAIM_HEARTBEAT_SECONDS` deve ser menor que a lease e mantém o
+fencing ativo enquanto Planner e Orchestrator processam a inicialização. O shutdown
+é limitado por `ECOS_RUNTIME_START_CLAIM_HEARTBEAT_SHUTDOWN_TIMEOUT_SECONDS`.
 
 ## AI Provider Abstraction
 
@@ -225,6 +229,7 @@ Endpoints principais:
 - `/api/v1/auth/login`, `/api/v1/auth/logout`, `/api/v1/auth/me`
 - `/api/v1/organization`, `/api/v1/overview`
 - `/api/v1/sessions`, `/api/v1/sessions/{id}`, `/api/v1/sessions/{id}/start`
+- `/api/v1/sara/interactions`, `/api/v1/sara/sessions/{id}/state`
 - `/api/v1/recommendations/{session_id}`
 - `/api/v1/approvals`, `/api/v1/approvals/{id}/approve`, `/api/v1/approvals/{id}/reject`
 - `/api/v1/executions`, `/api/v1/executions/{id}/start`

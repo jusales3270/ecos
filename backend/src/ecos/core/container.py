@@ -185,10 +185,13 @@ class Container:
         self.runtime_checkpoint_repository: RuntimeCheckpointRepository
         if self.settings.runtime_checkpoint_repository == "postgres":
             self.runtime_checkpoint_repository = PostgresRuntimeCheckpointRepository(
-                self.settings.database_url
+                self.settings.database_url,
+                lease_duration=self.settings.runtime_start_claim_lease,
             )
         else:
-            self.runtime_checkpoint_repository = InMemoryRuntimeCheckpointRepository()
+            self.runtime_checkpoint_repository = InMemoryRuntimeCheckpointRepository(
+                lease_duration=self.settings.runtime_start_claim_lease
+            )
         self.planner_provider = FakePlannerProvider()
         self.specialist_provider = FakeSpecialistProvider()
         self.decision_provider = FakeDecisionProvider()
@@ -512,6 +515,10 @@ class Container:
             governance_engine=self.governance_engine,
             checkpoint_repository=self.runtime_checkpoint_repository,
             artifact_codec=self.runtime_artifact_codec,
+            start_claim_heartbeat_interval=self.settings.runtime_start_claim_heartbeat,
+            start_claim_heartbeat_shutdown_timeout=(
+                self.settings.runtime_start_claim_heartbeat_shutdown_timeout
+            ),
             clock=lambda: datetime.now(UTC),
         )
         self.runtime_engine = RuntimeEngine(
@@ -542,6 +549,8 @@ class Container:
             event_service=self.event_service,
             knowledge_graph_service=self.knowledge_graph_service,
             repository=self._operational_repository(),
+            session_service=self.session_service,
+            authenticated_runtime_service=self.authenticated_runtime_service,
             demo_seed_enabled=self.settings.demo_seed_enabled,
             environment=self.settings.environment,
             outbox_service=self.outbox_service,
