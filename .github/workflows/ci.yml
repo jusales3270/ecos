@@ -63,6 +63,7 @@ jobs:
         working-directory: backend
         env:
           ECOS_TEST_DATABASE_URL: postgresql://ecos:ecos@localhost:5432/ecos
+          ECOS_DATABASE_URL: postgresql://ecos:ecos@localhost:5432/ecos
         run: uv run pytest
       - name: Frontend dependencies
         working-directory: frontend

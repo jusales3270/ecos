@@ -6,6 +6,7 @@ import logging
 from ecos.core import Container, DependencyNotFoundError, Settings
 from ecos.core.logging import (
     StructuredJsonFormatter,
+    configure_logging,
     get_correlation_id,
     set_correlation_id,
 )
@@ -139,6 +140,23 @@ def test_structured_logging_includes_correlation_id() -> None:
         "logger": "ecos.test",
         "message": "hello",
     }
+
+
+def test_configure_logging_preserves_external_handler() -> None:
+    """Logging configuration keeps handlers installed by external tooling."""
+    root_logger = logging.getLogger()
+    original_handlers = root_logger.handlers[:]
+    original_level = root_logger.level
+    external_handler = logging.NullHandler()
+    root_logger.addHandler(external_handler)
+
+    try:
+        configure_logging(Settings())
+
+        assert external_handler in root_logger.handlers
+    finally:
+        root_logger.handlers[:] = original_handlers
+        root_logger.setLevel(original_level)
 
 
 def test_standardized_exception_contains_code_and_details() -> None:

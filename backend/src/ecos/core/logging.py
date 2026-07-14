@@ -48,13 +48,21 @@ class StructuredJsonFormatter(logging.Formatter):
         return json.dumps(payload, sort_keys=True)
 
 
+class _EcosStreamHandler(logging.StreamHandler):
+    """Stream handler owned by the ECOS logging configuration."""
+
+
 def configure_logging(settings: Settings) -> None:
     """Configure process-wide structured logging."""
-    handler = logging.StreamHandler()
+    handler = _EcosStreamHandler()
     handler.setFormatter(StructuredJsonFormatter())
     handler.addFilter(CorrelationIdFilter())
 
     root_logger = logging.getLogger()
-    root_logger.handlers.clear()
+    root_logger.handlers[:] = [
+        existing
+        for existing in root_logger.handlers
+        if not isinstance(existing, _EcosStreamHandler)
+    ]
     root_logger.addHandler(handler)
     root_logger.setLevel(settings.log_level.upper())
