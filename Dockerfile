@@ -5,7 +5,7 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY frontend/ ./
 RUN npm run build
 
-FROM ghcr.io/astral-sh/uv:0.5.11-python3.12-bookworm-slim AS backend-build
+FROM ghcr.io/astral-sh/uv:0.9.30-python3.12-bookworm-slim AS backend-build
 WORKDIR /app/backend
 ENV UV_COMPILE_BYTECODE=1
 COPY backend/pyproject.toml backend/uv.lock ./
