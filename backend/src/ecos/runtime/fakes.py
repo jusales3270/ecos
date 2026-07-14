@@ -1,6 +1,7 @@
 """Fake and in-memory runtime implementations for ECOS architecture contracts."""
 
 from collections.abc import Iterator
+from threading import RLock
 from uuid import UUID
 
 from ecos.context import (
@@ -637,15 +638,27 @@ class FakeSessionRepository(SessionRepository):
         self.sessions: dict[UUID, ManagedSession] = {}
         self.snapshots: list[SessionSnapshot] = []
         self.transitions: dict[UUID, list[SessionTransition]] = {}
+        self._lock = RLock()
 
     def create(self, session: ManagedSession) -> ManagedSession:
         """Create a managed session in memory."""
-        self.sessions[session.session.id] = session
+        with self._lock:
+            self.sessions[session.session.id] = session
         return session
+
+    def create_if_absent(self, session: ManagedSession) -> tuple[ManagedSession, bool]:
+        """Atomically create one in-memory cognitive session."""
+        with self._lock:
+            existing = self.sessions.get(session.session.id)
+            if existing is not None:
+                return existing, False
+            self.sessions[session.session.id] = session
+            return session, True
 
     def get(self, session_id: UUID) -> ManagedSession | None:
         """Get a managed session by id."""
-        return self.sessions.get(session_id)
+        with self._lock:
+            return self.sessions.get(session_id)
 
     def update_state(self, state: SessionState) -> SessionState:
         """Update stored state for a managed session."""

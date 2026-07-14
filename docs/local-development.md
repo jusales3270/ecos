@@ -239,6 +239,14 @@ O Planner não usa OpenAI, `AIProvider`, variáveis de ambiente, PostgreSQL ou C
 
 O Container registra o Orchestrator real por padrão e injeta registry de executors, `EventService`, `SessionService`, relógio UTC, gerador de IDs, sleeper/backoff e configuração imutável de concorrência. O Runtime não chama Engines cognitivos diretamente; ele delega a execução ao Orchestrator e retorna o resultado público de `/runtime/demo`.
 
+O runtime autenticado registra `AuthenticatedRuntimeService`,
+`RuntimeArtifactCodec` e um `RuntimeCheckpointRepository` por injeção. O serviço
+recebe uma sessão já existente e escopada por organização, persiste plano,
+resultados tipados e estado resumível e não substitui o Orchestrator compartilhado.
+Use `ECOS_RUNTIME_CHECKPOINT_REPOSITORY=postgres` junto da migration
+`20260713_01_create_runtime_checkpoints.py` para sobreviver a reinícios. A opção
+`memory` é destinada a desenvolvimento e testes.
+
 O Orchestrator valida o DAG do `CognitivePlan`, resolve dependências, executa estágios prontos em modo sequencial, paralelo ou condicional, preserva outputs intermediários, sincroniza Session e registra timeline append-only. Condições usam somente operadores estruturados allowlisted; não há `eval`, expressão Python ou código recebido. Timeouts e retries são controlados por política injetada, com backoff testável sem espera real.
 
 Falhas obrigatórias interrompem dependentes e produzem relatório seguro; falhas opcionais podem virar `skipped` somente quando o plano permite. Execution permanece subordinado à governança humana: sem Governance satisfeita e aprovação explícita compatível, o pipeline fica em `waiting_approval` com estado retomável e sem marcar falha apenas por aguardar decisão humana.

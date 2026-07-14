@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from ecos.context import ContextBuildRequest, ContextService
 from ecos.debate import Debate, DebateService
@@ -410,6 +411,8 @@ class GovernanceExecutor(RuntimeEngineExecutor):
             organization_id=context.session.session.organization_id,
             plan_id=context.plan.plan_id,
             correlation_id=context.correlation_id,
+            user_id=_metadata_uuid(context.safe_metadata, "user_id"),
+            actor_id=_metadata_uuid(context.safe_metadata, "user_id"),
             cognitive_plan=context.plan,
             current_stage=context.stage.engine,
             requested_action="runtime_execution"
@@ -619,6 +622,16 @@ def _require(values: dict[str, Any], key: str) -> Any:
     if value is None:
         raise RuntimeError(f"{key} output is required")
     return value
+
+
+def _metadata_uuid(values: dict[str, Any], key: str) -> UUID | None:
+    value = values.get(key)
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except ValueError as error:
+        raise RuntimeError(f"invalid {key} runtime metadata") from error
 
 
 def _now() -> datetime:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -193,3 +193,58 @@ class OperationalMetrics(OperationalModel):
     outbox_failed: int = 0
     reconciliation_checks: int = 0
     latency_seconds_total: float = 0.0
+
+
+SaraRuntimeState = Literal[
+    "thinking",
+    "waiting_approval",
+    "executing",
+    "completed",
+    "error",
+]
+SaraActionType = Literal[
+    "open_session",
+    "open_approvals",
+    "open_executions",
+    "minimize_panel",
+    "close_panel",
+]
+
+
+class SaraRuntimeView(OperationalModel):
+    """Safe SARA projection of confirmed cognitive runtime state."""
+
+    state: SaraRuntimeState
+    lifecycle_status: str
+    stage: str | None = None
+    active_engine: str | None = None
+    progress: float = Field(ge=0.0, le=1.0)
+    version: int = Field(ge=1)
+    updated_at: datetime
+    error_code: str | None = None
+
+
+class SaraUiAction(OperationalModel):
+    """Allowlisted navigation-only action returned to the SARA presence layer."""
+
+    type: SaraActionType
+    session_id: UUID | None = None
+
+
+class SaraInteractionView(OperationalModel):
+    """Strict response for one authenticated SARA interaction."""
+
+    interaction_id: UUID = Field(default_factory=uuid4)
+    session_id: UUID
+    response: str = Field(max_length=10000)
+    runtime: SaraRuntimeView
+    ui_actions: tuple[SaraUiAction, ...] = Field(default_factory=tuple)
+    incomplete_context: bool
+    unavailable: bool
+
+
+class SaraSessionStateView(OperationalModel):
+    """Safe polling payload for one organization-scoped cognitive session."""
+
+    session_id: UUID
+    runtime: SaraRuntimeView

@@ -22,6 +22,12 @@ class SessionService:
         """Create a managed session through the repository abstraction."""
         return self._repository.create(session)
 
+    def create_session_if_absent(
+        self, session: ManagedSession
+    ) -> tuple[ManagedSession, bool]:
+        """Atomically create or return one cognitive session."""
+        return self._repository.create_if_absent(session)
+
     def get_session(self, session_id: UUID) -> ManagedSession | None:
         """Get a managed session through the repository abstraction."""
         return self._repository.get(session_id)

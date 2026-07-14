@@ -187,11 +187,11 @@ def test_sara_interaction_requires_auth_and_creates_governed_session() -> None:
 
     assert denied.status_code == 401
     assert result.status_code == 200
-    assert result.json()["cognitive_state"] == "created"
+    assert result.json()["runtime"]["state"] == "waiting_approval"
     assert result.json()["ui_actions"] == [
-        {"type": "open_session", "session_id": result.json()["session_id"]}
+        {"type": "open_approvals", "session_id": None}
     ]
-    assert session.json()["status"] == "created"
+    assert session.json()["status"] == "waiting_approval"
     assert session.json()["approval"] is None
     assert session.json()["execution"] is None
     assert resumed.status_code == 200

@@ -62,6 +62,28 @@ class Settings(BaseSettings):
         default="memory",
         description="Operational workflow repository implementation.",
     )
+    runtime_checkpoint_repository: Literal["memory", "postgres"] = Field(
+        default="memory",
+        description="Authenticated runtime checkpoint repository implementation.",
+    )
+    runtime_start_claim_lease_seconds: float = Field(
+        default=30,
+        gt=0,
+        le=3600,
+        description="Lease duration for atomic authenticated runtime startup.",
+    )
+    runtime_start_claim_heartbeat_seconds: float = Field(
+        default=10,
+        gt=0,
+        le=1800,
+        description="Heartbeat interval for authenticated runtime startup claims.",
+    )
+    runtime_start_claim_heartbeat_shutdown_timeout_seconds: float = Field(
+        default=5,
+        gt=0,
+        le=300,
+        description="Maximum wait for a runtime startup heartbeat to stop.",
+    )
     auth_token_secret: str = Field(
         default="development-only-auth-secret-change-me-000000",
         description="Local token signing secret supplied through secure config.",
@@ -175,6 +197,13 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_security_defaults(self) -> "Settings":
         """Reject insecure defaults in production-like environments."""
+        if (
+            self.runtime_start_claim_heartbeat_seconds
+            >= self.runtime_start_claim_lease_seconds
+        ):
+            raise ValueError(
+                "runtime start claim heartbeat must be shorter than its lease"
+            )
         if self.environment.lower() in {"production", "prod"} and (
             self.auth_token_secret == "development-only-auth-secret-change-me-000000"
             or len(self.auth_token_secret) < 32
@@ -197,6 +226,7 @@ class Settings(BaseSettings):
             or self.security_repository != "postgres"
             or self.observability_repository != "postgres"
             or self.operational_repository != "postgres"
+            or self.runtime_checkpoint_repository != "postgres"
         ):
             msg = "PostgreSQL repositories must be explicit in production"
             raise ValueError(msg)
@@ -206,6 +236,23 @@ class Settings(BaseSettings):
     def auth_token_ttl(self) -> timedelta:
         """Return token lifetime as timedelta."""
         return timedelta(minutes=self.auth_token_ttl_minutes)
+
+    @property
+    def runtime_start_claim_lease(self) -> timedelta:
+        """Return the configured runtime startup lease duration."""
+        return timedelta(seconds=self.runtime_start_claim_lease_seconds)
+
+    @property
+    def runtime_start_claim_heartbeat(self) -> timedelta:
+        """Return the configured runtime startup heartbeat interval."""
+        return timedelta(seconds=self.runtime_start_claim_heartbeat_seconds)
+
+    @property
+    def runtime_start_claim_heartbeat_shutdown_timeout(self) -> timedelta:
+        """Return the bounded runtime heartbeat shutdown timeout."""
+        return timedelta(
+            seconds=self.runtime_start_claim_heartbeat_shutdown_timeout_seconds
+        )
 
     @property
     def production(self) -> bool:

@@ -8,10 +8,15 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from ecos.core import Container, settings
-from ecos.operational import OperationalService
+from ecos.operational import (
+    OperationalService,
+    SaraInteractionView,
+    SaraSessionStateView,
+)
 from ecos.security import (
     AuthenticatedPrincipal,
     AuthenticationError,
@@ -46,12 +51,16 @@ class SessionCreateRequest(BaseModel):
 class SaraHistoryItem(BaseModel):
     """Bounded plain-text context supplied by the presence layer."""
 
+    model_config = ConfigDict(extra="forbid")
+
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=2000)
 
 
 class SaraInteractionRequest(BaseModel):
     """SARA input; organization and user are always derived from authentication."""
+
+    model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=2000)
     history: list[SaraHistoryItem] = Field(default_factory=list, max_length=12)
@@ -260,13 +269,13 @@ def start_cognition(
     )
 
 
-@router.post("/sara/interactions")
+@router.post("/sara/interactions", response_model=SaraInteractionView)
 def sara_interaction(
     payload: SaraInteractionRequest,
     request: Request,
     principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
     ops: Annotated[OperationalService, Depends(operational)],
-):
+) -> SaraInteractionView:
     """Record a SARA interaction without bypassing the cognitive workflow."""
     return ops.sara_interaction(
         principal_,
@@ -276,6 +285,42 @@ def sara_interaction(
         route_context=payload.route_context,
         correlation_id=request.state.correlation_id_uuid,
         idempotency_key=request.headers.get("Idempotency-Key"),
+    )
+
+
+@router.get("/sara/sessions/{session_id}/state")
+def sara_session_state(
+    session_id: UUID,
+    request: Request,
+    principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
+    ops: Annotated[OperationalService, Depends(operational)],
+) -> Response:
+    """Return a cache-aware safe projection of confirmed runtime state."""
+    state: SaraSessionStateView = ops.sara_session_state(principal_, session_id)
+    runtime = state.runtime
+    etag = (
+        '"'
+        + safe_hash(
+            state.session_id,
+            runtime.version,
+            runtime.lifecycle_status,
+            runtime.updated_at.isoformat(),
+        )
+        + '"'
+    )
+    headers = {"ETag": etag}
+    retry_after = {
+        "thinking": "2",
+        "waiting_approval": "5",
+        "executing": "2",
+    }.get(runtime.state)
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(
+        content=state.model_dump(mode="json"),
+        headers=headers,
     )
 
 

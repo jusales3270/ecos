@@ -1,7 +1,10 @@
 """Executable runtime pipeline entrypoint for ECOS."""
 
+from __future__ import annotations
+
 import asyncio
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from ecos.context import ContextProvider, ContextService
@@ -107,6 +110,14 @@ from ecos.session import (
 from ecos.simulation import SimulationService
 from ecos.specialists import SpecialistRegistry, SpecialistService
 
+if TYPE_CHECKING:
+    from ecos.runtime.models import (
+        AuthenticatedRuntimeResult,
+        ResumeSessionCommand,
+        StartExistingSessionCommand,
+    )
+    from ecos.runtime.service import AuthenticatedRuntimeService
+
 
 class CognitivePipeline:
     """Coordinates the first deterministic ECOS cognitive pipeline."""
@@ -154,7 +165,7 @@ class CognitivePipeline:
         self.ai_service = ai_service
 
     @classmethod
-    def with_fakes(cls) -> "CognitivePipeline":
+    def with_fakes(cls) -> CognitivePipeline:
         """Create a standalone fake pipeline for tests and demos."""
         memory_repository = FakeMemoryRepository()
         session_repository = FakeSessionRepository()
@@ -633,18 +644,39 @@ class CognitivePipeline:
 class RuntimeEngine:
     """Public runtime engine entrypoint for the demo cognitive pipeline."""
 
-    def __init__(self, pipeline: CognitivePipeline) -> None:
+    def __init__(
+        self,
+        pipeline: CognitivePipeline,
+        authenticated_service: AuthenticatedRuntimeService | None = None,
+    ) -> None:
         """Initialize the engine with an externally provided pipeline."""
         self.pipeline = pipeline
+        self.authenticated_service = authenticated_service
 
     @classmethod
-    def with_fakes(cls) -> "RuntimeEngine":
+    def with_fakes(cls) -> RuntimeEngine:
         """Create a standalone runtime engine backed by fake dependencies."""
         return cls(CognitivePipeline.with_fakes())
 
     def run(self, objective: str) -> RuntimeResult:
         """Run the first executable ECOS cognitive pipeline."""
         return self.pipeline.run(objective)
+
+    def start_existing_session(
+        self, command: StartExistingSessionCommand
+    ) -> AuthenticatedRuntimeResult:
+        """Start an existing session through the authenticated runtime service."""
+        if self.authenticated_service is None:
+            raise RuntimeError("authenticated runtime service is not configured")
+        return self.authenticated_service.start_existing_session(command)
+
+    def resume_session(
+        self, command: ResumeSessionCommand
+    ) -> AuthenticatedRuntimeResult:
+        """Resume a session after a validated explicit human decision."""
+        if self.authenticated_service is None:
+            raise RuntimeError("authenticated runtime service is not configured")
+        return self.authenticated_service.resume_session(command)
 
 
 def _execution_engine(event_service: EventService) -> ExecutionEngine:

@@ -1,11 +1,15 @@
 """Runtime models for the first executable ECOS cognitive pipeline."""
 
+from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from ecos.context import ContextObject
 from ecos.decision import Recommendation
 from ecos.domain import CognitiveSession
+from ecos.governance import ApprovalDecision
 from ecos.memory import MemoryObject
+from ecos.orchestrator import PipelineExecutionStatus
 from ecos.planner import CognitivePlan
 from ecos.reasoning import ReasoningResult
 from ecos.session import ManagedSession
@@ -40,3 +44,33 @@ class RuntimeResult(BaseModel):
     status: str = Field(description="Final execution status.")
     recommendation: str = Field(description="Generated deterministic recommendation.")
     confidence: float = Field(ge=0.0, le=1.0, description="Final confidence.")
+
+
+class StartExistingSessionCommand(BaseModel):
+    """Explicit authenticated input for starting an existing cognitive session."""
+
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
+    session_id: UUID
+    organization_id: UUID
+    user_id: UUID
+    correlation_id: UUID
+    objective: str = Field(min_length=1, max_length=200)
+
+
+class ResumeSessionCommand(StartExistingSessionCommand):
+    """Explicit authenticated input and human decision for runtime resume."""
+
+    approval_decision: ApprovalDecision
+
+
+class AuthenticatedRuntimeResult(BaseModel):
+    """Internal result from an authenticated start or resume operation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    organization_id: UUID
+    plan_id: UUID
+    status: PipelineExecutionStatus
+    checkpoint_version: int = Field(ge=1)

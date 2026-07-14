@@ -1,5 +1,7 @@
 """Service layer for the ECOS Orchestrator architecture."""
 
+from typing import overload
+
 from ecos.orchestrator.engine import Orchestrator
 from ecos.orchestrator.models import (
     ExecutionPlan,
@@ -7,6 +9,7 @@ from ecos.orchestrator.models import (
     ExecutionStep,
     OrchestrationInput,
     OrchestrationResult,
+    ResumableOrchestrationState,
 )
 from ecos.orchestrator.provider import OrchestratorProvider
 
@@ -46,8 +49,35 @@ class OrchestratorService:
         """Pause an execution plan through the provider abstraction."""
         return self._provider.pause(plan)
 
-    def resume(self, plan: ExecutionPlan) -> ExecutionPlan:
-        """Resume an execution plan through the provider abstraction."""
+    @overload
+    def resume(self, value: ExecutionPlan) -> ExecutionPlan: ...
+
+    @overload
+    def resume(
+        self,
+        value: OrchestrationInput,
+        resumable_state: ResumableOrchestrationState,
+    ) -> OrchestrationResult: ...
+
+    def resume(
+        self,
+        value: ExecutionPlan | OrchestrationInput,
+        resumable_state: ResumableOrchestrationState | None = None,
+    ) -> ExecutionPlan | OrchestrationResult:
+        """Resume a legacy plan or a checkpointed CognitivePlan."""
+        if isinstance(value, ExecutionPlan):
+            if resumable_state is not None:
+                raise TypeError("legacy execution plan does not accept resume state")
+            return self._provider.resume(value)
+        if resumable_state is None:
+            raise TypeError("orchestration resume state is required")
+        if self._orchestrator is None:
+            msg = "real orchestrator is not configured"
+            raise RuntimeError(msg)
+        return self._orchestrator.resume(value, resumable_state)
+
+    def resume_plan(self, plan: ExecutionPlan) -> ExecutionPlan:
+        """Resume a legacy execution plan through the provider abstraction."""
         return self._provider.resume(plan)
 
     def cancel(self, plan: ExecutionPlan) -> ExecutionPlan:

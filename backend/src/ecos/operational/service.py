@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from ecos.domain import CognitiveSession, Objective, SessionStage
 from ecos.events import Event, EventMetadata, EventPriority, EventService, EventType
 from ecos.knowledge import (
     KnowledgeEntity,
@@ -16,7 +17,10 @@ from ecos.knowledge import (
     SemanticQuery,
 )
 from ecos.knowledge.exceptions import ConflictingVersionError
-from ecos.operational.exceptions import OperationalConflictError
+from ecos.operational.exceptions import (
+    OperationalConflictError,
+    OperationalRuntimeUnavailableError,
+)
 from ecos.operational.models import (
     ApprovalStatus,
     ApprovalView,
@@ -27,12 +31,26 @@ from ecos.operational.models import (
     OperationalSessionView,
     OrganizationOverview,
     RecommendationView,
+    SaraInteractionView,
+    SaraRuntimeView,
+    SaraSessionStateView,
+    SaraUiAction,
     TimelineEntry,
 )
 from ecos.operational.repository import (
     OperationalRepository,
     idempotency_record,
     payload_fingerprint,
+)
+from ecos.runtime import (
+    AuthenticatedRuntimeService,
+    RuntimeAlreadyStartedError,
+    RuntimeCheckpoint,
+    RuntimeCheckpointConflictError,
+    RuntimeCheckpointError,
+    RuntimeCheckpointScopeError,
+    RuntimeCheckpointStatus,
+    StartExistingSessionCommand,
 )
 from ecos.security import (
     AuthenticatedPrincipal,
@@ -42,6 +60,13 @@ from ecos.security import (
     Role,
     SecurityRepository,
     SecurityService,
+)
+from ecos.session import (
+    ManagedSession,
+    SessionContext,
+    SessionLifecycleStatus,
+    SessionService,
+    SessionState,
 )
 
 DEMO_ORG_A = UUID("10000000-0000-4000-8000-000000000001")
@@ -64,6 +89,8 @@ class OperationalService:
         event_service: EventService,
         knowledge_graph_service,
         repository: OperationalRepository,
+        session_service: SessionService,
+        authenticated_runtime_service: AuthenticatedRuntimeService,
         demo_seed_enabled: bool,
         environment: str,
         outbox_service: object | None = None,
@@ -74,6 +101,8 @@ class OperationalService:
         self._event_service = event_service
         self._knowledge_graph_service = knowledge_graph_service
         self._repository = repository
+        self._session_service = session_service
+        self._authenticated_runtime = authenticated_runtime_service
         self._outbox_service = outbox_service
         self._outbox_enabled = outbox_enabled
         self._metrics = OperationalMetrics()
@@ -305,7 +334,11 @@ class OperationalService:
     ) -> list[OperationalSessionView]:
         """List sessions for the authenticated organization."""
         self._security_service.authorize(principal, Permission.READ_SESSIONS)
-        return self._repository.list_sessions(principal.organization_id, status=status)
+        sessions = self._repository.list_sessions(principal.organization_id)
+        projected = [self._project_operational_session(item) for item in sessions]
+        if status is not None:
+            projected = [item for item in projected if item.status.value == status]
+        return projected
 
     def sara_interaction(
         self,
@@ -317,9 +350,23 @@ class OperationalService:
         route_context: str,
         correlation_id: UUID,
         idempotency_key: str | None = None,
-    ) -> dict[str, object]:
-        """Attach presence input to a governed session without starting execution."""
-        del history
+    ) -> SaraInteractionView:
+        """Start or observe a real governed runtime without granting authority."""
+        self._security_service.authorize(principal, Permission.WRITE_SESSIONS)
+        idempotency_payload = {
+            "message": message,
+            "history": history,
+            "session_id": str(session_id) if session_id is not None else None,
+            "route_context": route_context,
+        }
+        cached = self._idempotency_hit(
+            principal,
+            "sara.interaction",
+            idempotency_key,
+            idempotency_payload,
+        )
+        if cached is not None:
+            return SaraInteractionView.model_validate(cached)
         if session_id is None:
             session = self.create_session(
                 principal,
@@ -348,34 +395,289 @@ class OperationalService:
                 event_types=(EventType.SESSION_UPDATED,),
                 principal=principal,
             )
-        state = session.status.value
-        if state == OperationalSessionStatus.WAITING_APPROVAL.value:
+        self._ensure_cognitive_session(
+            session,
+            route_context=route_context,
+        )
+        checkpoint = self._runtime_checkpoint(principal, session.session_id)
+        managed = self._managed_session(principal, session.session_id)
+        if (
+            checkpoint is None
+            and managed.state.lifecycle_status is SessionLifecycleStatus.CREATED
+        ):
+            try:
+                self._authenticated_runtime.start_existing_session(
+                    StartExistingSessionCommand(
+                        session_id=session.session_id,
+                        organization_id=principal.organization_id,
+                        user_id=principal.user_id,
+                        correlation_id=correlation_id,
+                        objective=session.objective,
+                    )
+                )
+            except RuntimeAlreadyStartedError:
+                pass
+            except RuntimeCheckpointConflictError as error:
+                raise OperationalConflictError(
+                    "runtime initialization conflicts with persisted state"
+                ) from error
+            except RuntimeCheckpointScopeError:
+                raise AuthorizationError("resource is not available") from None
+            except RuntimeCheckpointError as error:
+                raise OperationalRuntimeUnavailableError() from error
+        runtime = self.sara_session_state(principal, session.session_id).runtime
+        if runtime.state == "waiting_approval":
             response = (
                 "A sessão está aguardando aprovação humana. Posso abrir as "
                 "aprovações, mas não aprová-las."
             )
-            actions: tuple[dict[str, str], ...] = ({"type": "open_approvals"},)
-        elif state == OperationalSessionStatus.EXECUTING.value:
+            actions = (SaraUiAction(type="open_approvals"),)
+        elif runtime.state == "executing":
             response = (
                 "Acompanho uma execução aprovada registrada nesta sessão. "
                 "Posso abrir a área de execuções."
             )
-            actions = ({"type": "open_executions"},)
+            actions = (SaraUiAction(type="open_executions"),)
+        elif runtime.state == "completed":
+            response = "A sessão cognitiva foi concluída pelo runtime governado."
+            actions = (
+                SaraUiAction(type="open_session", session_id=session.session_id),
+            )
+        elif runtime.state == "error":
+            response = (
+                "A sessão encontrou uma falha confirmada. Abra a sessão para revisão."
+            )
+            actions = (
+                SaraUiAction(type="open_session", session_id=session.session_id),
+            )
         else:
             response = (
-                "Registrei sua entrada como objetivo de uma sessão cognitiva. "
-                "A SARA não aprova decisões nem executa ações; abra a sessão "
-                "para continuar pelo fluxo governado."
+                "A sessão cognitiva está sendo processada pelo runtime governado."
             )
-            actions = ({"type": "open_session", "session_id": str(session.session_id)},)
-        return {
-            "response": response,
-            "session_id": str(session.session_id),
-            "cognitive_state": state,
-            "ui_actions": actions,
-            "unavailable": False,
-            "incomplete_context": state == OperationalSessionStatus.CREATED.value,
-        }
+            actions = (
+                SaraUiAction(type="open_session", session_id=session.session_id),
+            )
+        interaction = SaraInteractionView(
+            interaction_id=uuid4(),
+            session_id=session.session_id,
+            response=response,
+            runtime=runtime,
+            ui_actions=actions,
+            unavailable=False,
+            incomplete_context=len(history) == 0,
+        )
+        self._store_idempotency(
+            principal,
+            "sara.interaction",
+            idempotency_key,
+            idempotency_payload,
+            interaction.model_dump(mode="json"),
+            session.session_id,
+        )
+        return interaction
+
+    def sara_session_state(
+        self,
+        principal: AuthenticatedPrincipal,
+        session_id: UUID,
+    ) -> SaraSessionStateView:
+        """Project only confirmed organization-scoped runtime state."""
+        self._security_service.authorize(principal, Permission.READ_SESSIONS)
+        operational = self._repository.get_session(
+            principal.organization_id, session_id
+        )
+        if operational is None:
+            raise AuthorizationError("resource is not available")
+        _, operational_version = operational
+        managed = self._managed_session(principal, session_id)
+        checkpoint = self._runtime_checkpoint(principal, session_id)
+        runtime = self._project_sara_runtime(
+            managed,
+            checkpoint,
+            fallback_version=operational_version,
+        )
+        return SaraSessionStateView(session_id=session_id, runtime=runtime)
+
+    def _ensure_cognitive_session(
+        self,
+        session: OperationalSessionView,
+        *,
+        route_context: str,
+    ) -> ManagedSession:
+        existing = self._session_service.get_session(session.session_id)
+        if existing is not None:
+            self._validate_cognitive_session_identity(existing, session)
+            return existing
+        objective = Objective(
+            organization_id=session.organization_id,
+            title=session.objective,
+            description=session.description,
+        )
+        managed = ManagedSession(
+            session=CognitiveSession(
+                id=session.session_id,
+                organization_id=session.organization_id,
+                objective=objective,
+            ),
+            state=SessionState(
+                session_id=session.session_id,
+                lifecycle_status=SessionLifecycleStatus.CREATED,
+                current_stage=SessionStage.CONTEXT,
+            ),
+            context=SessionContext(
+                organization_id=session.organization_id,
+                objective=objective,
+                metadata={
+                    "authenticated": True,
+                    "source": "sara",
+                    "route_context": route_context,
+                },
+            ),
+        )
+        stored, _ = self._session_service.create_session_if_absent(managed)
+        self._validate_cognitive_session_identity(stored, session)
+        return stored
+
+    @staticmethod
+    def _validate_cognitive_session_identity(
+        managed: ManagedSession,
+        operational: OperationalSessionView,
+    ) -> None:
+        if (
+            managed.session.id != operational.session_id
+            or managed.context.organization_id != operational.organization_id
+            or managed.session.organization_id != operational.organization_id
+            or managed.session.objective.organization_id != operational.organization_id
+        ):
+            raise AuthorizationError("resource is not available")
+        if (
+            managed.session.objective.title != operational.objective
+            or managed.session.objective.description != operational.description
+        ):
+            raise OperationalConflictError(
+                "cognitive session objective conflicts with operational session"
+            )
+
+    def _managed_session(
+        self,
+        principal: AuthenticatedPrincipal,
+        session_id: UUID,
+    ) -> ManagedSession:
+        managed = self._session_service.get_session(session_id)
+        if managed is None:
+            raise OperationalRuntimeUnavailableError()
+        if (
+            managed.context.organization_id != principal.organization_id
+            or managed.session.organization_id != principal.organization_id
+        ):
+            raise AuthorizationError("resource is not available")
+        return managed
+
+    def _runtime_checkpoint(
+        self,
+        principal: AuthenticatedPrincipal,
+        session_id: UUID,
+    ) -> RuntimeCheckpoint | None:
+        try:
+            return self._authenticated_runtime.get_checkpoint(
+                principal.organization_id,
+                session_id,
+            )
+        except RuntimeCheckpointScopeError:
+            raise AuthorizationError("resource is not available") from None
+        except RuntimeCheckpointError as error:
+            raise OperationalRuntimeUnavailableError() from error
+
+    @staticmethod
+    def _project_sara_runtime(
+        managed: ManagedSession,
+        checkpoint: RuntimeCheckpoint | None,
+        *,
+        fallback_version: int,
+    ) -> SaraRuntimeView:
+        lifecycle = managed.state.lifecycle_status
+        error_code: str | None = None
+        if (
+            lifecycle is SessionLifecycleStatus.FAILED
+            or checkpoint is not None
+            and checkpoint.status is RuntimeCheckpointStatus.FAILED
+        ):
+            state = "error"
+            error_code = "RUNTIME_FAILED"
+        elif checkpoint is not None:
+            state = {
+                RuntimeCheckpointStatus.WAITING_APPROVAL: "waiting_approval",
+                RuntimeCheckpointStatus.EXECUTING: "executing",
+                RuntimeCheckpointStatus.COMPLETED: "completed",
+            }.get(checkpoint.status, "error")
+            if state == "error":
+                error_code = "RUNTIME_STATE_INVALID"
+        elif lifecycle in {
+            SessionLifecycleStatus.CREATED,
+            SessionLifecycleStatus.INITIALIZED,
+            SessionLifecycleStatus.PLANNING,
+        }:
+            state = "thinking"
+        elif lifecycle is SessionLifecycleStatus.EXECUTING:
+            state = "executing"
+        elif lifecycle is SessionLifecycleStatus.COMPLETED:
+            state = "completed"
+        else:
+            state = "error"
+            error_code = "RUNTIME_CHECKPOINT_UNAVAILABLE"
+        updated_at = managed.state.updated_at
+        if checkpoint is not None and checkpoint.updated_at > updated_at:
+            updated_at = checkpoint.updated_at
+        return SaraRuntimeView(
+            state=state,
+            lifecycle_status=lifecycle.value,
+            stage=managed.state.current_stage.value,
+            active_engine=managed.state.active_engine,
+            progress=managed.state.progress,
+            version=checkpoint.version
+            if checkpoint is not None
+            else max(1, fallback_version),
+            updated_at=updated_at,
+            error_code=error_code,
+        )
+
+    def _project_operational_session(
+        self,
+        session: OperationalSessionView,
+        *,
+        fallback_version: int = 1,
+    ) -> OperationalSessionView:
+        managed = self._session_service.get_session(session.session_id)
+        if (
+            managed is None
+            or managed.context.organization_id != session.organization_id
+        ):
+            return session
+        try:
+            checkpoint = self._authenticated_runtime.get_checkpoint(
+                session.organization_id,
+                session.session_id,
+            )
+        except RuntimeCheckpointError:
+            return session
+        runtime = self._project_sara_runtime(
+            managed,
+            checkpoint,
+            fallback_version=fallback_version,
+        )
+        projected_status = {
+            "thinking": OperationalSessionStatus.PROCESSING,
+            "waiting_approval": OperationalSessionStatus.WAITING_APPROVAL,
+            "executing": OperationalSessionStatus.EXECUTING,
+            "completed": OperationalSessionStatus.COMPLETED,
+            "error": OperationalSessionStatus.FAILED,
+        }[runtime.state]
+        return session.model_copy(
+            update={
+                "status": projected_status,
+                "updated_at": runtime.updated_at,
+            }
+        )
 
     def get_session(
         self, principal: AuthenticatedPrincipal, session_id: UUID
@@ -390,7 +692,7 @@ class OperationalService:
                 }
             )
             raise AuthorizationError("resource is not available")
-        return result[0]
+        return self._project_operational_session(result[0], fallback_version=result[1])
 
     def start_cognition(
         self,
@@ -951,7 +1253,10 @@ class OperationalService:
     def _sessions_for(
         self, principal: AuthenticatedPrincipal
     ) -> list[OperationalSessionView]:
-        return self._repository.list_sessions(principal.organization_id)
+        return [
+            self._project_operational_session(item)
+            for item in self._repository.list_sessions(principal.organization_id)
+        ]
 
     def _find_by_approval(
         self, principal: AuthenticatedPrincipal, approval_id: UUID
