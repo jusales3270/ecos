@@ -394,8 +394,6 @@ def test_postgres_atomic_runtime_claim_and_cognitive_create() -> None:
     database_url = TEST_DATABASE_URL.replace(
         "postgresql://", "postgresql+asyncpg://", 1
     )
-    runtime_repository = PostgresRuntimeCheckpointRepository(database_url)
-    session_repository = PostgresSessionRepository(database_url)
     session_id = uuid4()
     objective = Objective(
         organization_id=DEMO_ORG_A,
@@ -425,26 +423,31 @@ def test_postgres_atomic_runtime_claim_and_cognitive_create() -> None:
         deep=True,
     )
 
+    def create_session_in_worker(
+        candidate: ManagedSession,
+    ) -> tuple[ManagedSession, bool]:
+        repository = PostgresSessionRepository(database_url)
+        return repository.create_if_absent(candidate)
+
+    def acquire_claim_in_worker(_: int):
+        repository = PostgresRuntimeCheckpointRepository(database_url)
+        return repository.acquire_start_claim(
+            organization_id=DEMO_ORG_A,
+            session_id=session_id,
+            user_id=DEMO_OPERATOR,
+            correlation_id=uuid4(),
+            objective=objective.title,
+        )
+
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
             session_results = tuple(
                 executor.map(
-                    session_repository.create_if_absent,
+                    create_session_in_worker,
                     (managed, competing),
                 )
             )
-            claim_results = tuple(
-                executor.map(
-                    lambda _: runtime_repository.acquire_start_claim(
-                        organization_id=DEMO_ORG_A,
-                        session_id=session_id,
-                        user_id=DEMO_OPERATOR,
-                        correlation_id=uuid4(),
-                        objective=objective.title,
-                    ),
-                    range(2),
-                )
-            )
+            claim_results = tuple(executor.map(acquire_claim_in_worker, range(2)))
 
         assert sum(1 for _, created in session_results if created) == 1
         assert sum(1 for item in claim_results if item.acquired) == 1

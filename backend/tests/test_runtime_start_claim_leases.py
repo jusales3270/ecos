@@ -278,12 +278,23 @@ def test_postgres_runtime_start_claim_lease_recovery_and_transitions() -> None:
     config = Config("alembic.ini")
     alembic_command.upgrade(config, "head")
     clock = MutableClock(datetime(2026, 7, 13, 12, 0, tzinfo=UTC))
+    database_url = TEST_DATABASE_URL.replace(
+        "postgresql://", "postgresql+asyncpg://", 1
+    )
     repository = PostgresRuntimeCheckpointRepository(
-        TEST_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1),
+        database_url,
         lease_duration=timedelta(seconds=5),
         clock=clock,
     )
     session_id = uuid4()
+
+    def recover_in_worker(_: int) -> RuntimeStartAcquisition:
+        worker_repository = PostgresRuntimeCheckpointRepository(
+            database_url,
+            lease_duration=timedelta(seconds=5),
+            clock=clock,
+        )
+        return _acquire(worker_repository, session_id)
 
     try:
         first = _acquire(repository, session_id)
@@ -305,9 +316,7 @@ def test_postgres_runtime_start_claim_lease_recovery_and_transitions() -> None:
                 expected_status=RuntimeStartClaimStatus.INITIALIZING,
             )
         with ThreadPoolExecutor(max_workers=2) as executor:
-            recovered = tuple(
-                executor.map(lambda _: _acquire(repository, session_id), range(2))
-            )
+            recovered = tuple(executor.map(recover_in_worker, range(2)))
 
         assert sum(item.acquired for item in recovered) == 1
         assert {item.claim.attempt for item in recovered} == {2}
