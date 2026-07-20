@@ -686,6 +686,8 @@ class ExecutionResult(ExecutionModel):
     plan_id: UUID
     correlation_id: UUID
     status: ExecutionStatus
+    fingerprint: str = Field(min_length=64, max_length=64)
+    terminal_event_id: UUID | None = None
     mode: ExecutionMode
     started_at: datetime
     completed_at: datetime | None

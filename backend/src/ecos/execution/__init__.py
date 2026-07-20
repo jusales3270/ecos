@@ -65,6 +65,12 @@ from ecos.execution.provider import (
     deterministic_fingerprint,
 )
 from ecos.execution.registry import ConnectorRegistry
+from ecos.execution.repository import (
+    ExecutionResultConflictError,
+    ExecutionResultRepository,
+    ExecutionResultRepositoryError,
+    InMemoryExecutionResultRepository,
+)
 
 __all__ = [
     "ApprovalEvidenceMissingError",
@@ -95,6 +101,9 @@ __all__ = [
     "ExecutionRequest",
     "ExecutionResumeState",
     "ExecutionResult",
+    "ExecutionResultConflictError",
+    "ExecutionResultRepository",
+    "ExecutionResultRepositoryError",
     "ExecutionStatus",
     "ExecutionStep",
     "ExecutionStepResult",
@@ -109,6 +118,7 @@ __all__ = [
     "IdempotencyProvider",
     "IdempotencyRecord",
     "InMemoryConnector",
+    "InMemoryExecutionResultRepository",
     "InMemoryHumanTaskProvider",
     "InMemoryIdempotencyProvider",
     "InvalidConditionError",

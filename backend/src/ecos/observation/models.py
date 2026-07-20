@@ -353,6 +353,8 @@ class ObservationRequest(ObservationModel):
     session_id: UUID
     plan_id: UUID
     correlation_id: UUID
+    execution_id: UUID | None = None
+    source_event_id: UUID | None = None
     source_type: ObservationSourceType
     source_id: str = Field(min_length=1)
     execution_result: Any = None
@@ -378,6 +380,8 @@ class ObservationResult(ObservationModel):
     session_id: UUID
     plan_id: UUID
     correlation_id: UUID
+    execution_id: UUID | None = None
+    source_event_id: UUID | None = None
     source_type: ObservationSourceType
     source_id: str
     status: ObservedOutcomeStatus

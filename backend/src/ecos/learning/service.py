@@ -259,6 +259,8 @@ class LearningService:
             session_id=request.session_id,
             plan_id=request.plan_id,
             correlation_id=request.correlation_id,
+            execution_id=request.execution_id,
+            observation_id=request.observation_result.observation_id,
             status=LearningStatus.COMPLETED,
             candidates=candidates,
             validated_candidates=validated_candidates,
@@ -318,8 +320,12 @@ class LearningService:
             item.evidence_id for item in observation.evidence if not item.sensitive
         )
         source_references = (f"observation:{observation.observation_id}",)
+        execution_succeeded = self._execution_succeeded(request)
         for outcome in observation.observed_outcomes:
-            if outcome.status is ObservedOutcomeStatus.SUCCESSFUL:
+            if not execution_succeeded and request.execution_result is not None:
+                code = "execution_failed"
+                statement_status = self._execution_status(request) or "failed"
+            elif outcome.status is ObservedOutcomeStatus.SUCCESSFUL:
                 code = "expectation_reached"
                 statement_status = "successful"
             elif outcome.status in {
@@ -368,7 +374,7 @@ class LearningService:
         recommendation = request.recommendation or getattr(
             request.decision_package, "recommendation", None
         )
-        if recommendation is not None:
+        if recommendation is not None and execution_succeeded:
             candidates.append(
                 LearningCandidate(
                     learning_candidate_id=self._id_generator(),
@@ -434,7 +440,9 @@ class LearningService:
     ) -> LearningValidation:
         evidence_count = len(candidate.evidence_references)
         quality = request.observation_result.quality.evidence_quality_score
-        if self._policy_provider.blocks(candidate):
+        if not self._execution_succeeded(request) and self._is_positive(candidate):
+            outcome = LearningValidationOutcome.POLICY_BLOCKED
+        elif self._policy_provider.blocks(candidate):
             outcome = LearningValidationOutcome.POLICY_BLOCKED
         elif self._policy_provider.requires_human_review(candidate):
             outcome = LearningValidationOutcome.HUMAN_REVIEW_REQUIRED
@@ -615,6 +623,10 @@ class LearningService:
                 payload={
                     "organization_id": str(request.organization_id),
                     "plan_id": str(request.plan_id),
+                    "execution_id": None
+                    if request.execution_id is None
+                    else str(request.execution_id),
+                    "observation_id": str(request.observation_result.observation_id),
                     **payload,
                 },
                 metadata=EventMetadata(correlation_id=request.correlation_id),
@@ -629,6 +641,9 @@ class LearningService:
             "session_id": str(request.session_id),
             "plan_id": str(request.plan_id),
             "observation_id": str(request.observation_result.observation_id),
+            "execution_id": None
+            if request.execution_id is None
+            else str(request.execution_id),
             "policy_version": "learning-config-v1",
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -647,6 +662,32 @@ class LearningService:
         return hashlib.sha256(
             json.dumps(data, sort_keys=True, default=str).encode()
         ).hexdigest()
+
+    @staticmethod
+    def _execution_status(request: LearningRequest) -> str:
+        status = getattr(request.execution_result, "status", "")
+        return str(getattr(status, "value", status)).lower()
+
+    def _execution_succeeded(self, request: LearningRequest) -> bool:
+        result = request.execution_result
+        if result is None:
+            return True
+        if self._execution_status(request) != "completed":
+            return False
+        return not bool(
+            tuple(getattr(result, "failures", ()) or ())
+            or tuple(getattr(result, "rollback_results", ()) or ())
+        )
+
+    @staticmethod
+    def _is_positive(candidate: LearningCandidate) -> bool:
+        statement_type = str(candidate.statement.get("type", "")).lower()
+        outcome_status = str(candidate.statement.get("outcome_status", "")).lower()
+        positive_tokens = ("success", "expectation_reached", "effective", "efficacy")
+        return any(
+            token in statement_type or token in outcome_status
+            for token in positive_tokens
+        )
 
     def _candidate_signature(self, candidate: LearningCandidate) -> str:
         payload = {

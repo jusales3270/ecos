@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from ecos.events import EventService, EventType
+from ecos.execution import ExecutionMode, ExecutionResult, ExecutionStatus
 from ecos.observation import (
     ComparisonOperator,
     ExpectedOutcome,
@@ -141,3 +142,39 @@ def test_observation_idempotency_hit_and_conflict() -> None:
         engine.observe(
             original.model_copy(update={"observed_measurements": (measurement(0.2),)})
         )
+
+
+def test_failed_execution_prevents_successful_observation() -> None:
+    """A canonical failure prevails over a matching confidence measurement."""
+    engine, _ = service()
+    original = request(measurements=(measurement(0.99),))
+    execution_id = uuid4()
+    execution = ExecutionResult(
+        execution_id=execution_id,
+        execution_request_id=uuid4(),
+        execution_plan_id=uuid4(),
+        organization_id=original.organization_id,
+        session_id=original.session_id,
+        plan_id=original.plan_id,
+        correlation_id=original.correlation_id,
+        status=ExecutionStatus.FAILED,
+        fingerprint="a" * 64,
+        mode=ExecutionMode.DRY_RUN,
+        started_at=NOW,
+        completed_at=NOW,
+        duration=0.0,
+        idempotency_key="failed-observation",
+        authorization_id=uuid4(),
+    )
+    failed_request = original.model_copy(
+        update={
+            "execution_id": execution_id,
+            "execution_result": execution,
+        }
+    )
+
+    result = engine.observe(failed_request)
+
+    assert result.execution_id == execution_id
+    assert result.status is ObservedOutcomeStatus.FAILED
+    assert result.outcome_score == 0.0
