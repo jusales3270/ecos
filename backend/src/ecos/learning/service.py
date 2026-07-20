@@ -4,11 +4,12 @@ import hashlib
 import json
 from collections.abc import Callable
 from datetime import datetime
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from ecos.events import Event, EventMetadata, EventPriority, EventService, EventType
 from ecos.memory import MemoryObject, MemoryService, MemoryType
 from ecos.observation import ObservedOutcomeStatus
+from ecos.observation.repository import ObservationConflictError, ObservationRepository
 
 from .models import (
     CalibrationDirection,
@@ -34,6 +35,7 @@ from .provider import (
     LearningIdempotencyProvider,
     LearningPolicyProvider,
 )
+from .repository import InMemoryLearningRepository, LearningRepository
 
 Clock = Callable[[], datetime]
 IdGenerator = Callable[[], UUID]
@@ -74,6 +76,8 @@ class LearningService:
         clock: Clock | None = None,
         id_generator: IdGenerator | None = None,
         config: LearningConfig | None = None,
+        repository: LearningRepository | None = None,
+        observation_repository: ObservationRepository | None = None,
     ) -> None:
         self._memory_service = memory_service
         self._event_service = event_service
@@ -88,6 +92,8 @@ class LearningService:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._id_generator = id_generator or uuid4
         self._config = config or LearningConfig()
+        self._repository = repository or InMemoryLearningRepository(clock=self._clock)
+        self._observation_repository = observation_repository
 
     def learn(self, candidate: LearningObject) -> MemoryObject | None:
         """Validate a candidate and persist it only when approved."""
@@ -140,21 +146,30 @@ class LearningService:
 
     def process(self, request: LearningRequest) -> LearningResult:
         """Process ObservationResult into validated, reusable memory."""
+        self._validate_canonical_observation(request)
         key = self._idempotency_key(request)
         fingerprint = self._fingerprint(request)
-        existing = self._idempotency_provider.get(key)
-        if existing is not None:
-            existing_fingerprint, existing_result = existing
-            if existing_fingerprint != fingerprint:
-                self._publish_learning(
-                    request,
-                    EventType.IDEMPOTENCY_CONFLICT,
-                    {"reason": "learning idempotency conflict"},
-                )
-                raise RuntimeError("learning idempotency conflict")
-            self._publish_learning(request, EventType.IDEMPOTENCY_HIT, {})
-            return existing_result  # type: ignore[return-value]
-
+        policy_version = "learning-config-v1"
+        learning_id = uuid5(
+            NAMESPACE_URL,
+            f"ecos:{request.organization_id}:{request.observation_result.observation_id}:{policy_version}",
+        )
+        acquisition = self._repository.acquire(
+            learning_id=learning_id,
+            organization_id=request.organization_id,
+            session_id=request.session_id,
+            execution_id=request.execution_id,
+            observation_id=request.observation_result.observation_id,
+            correlation_id=request.correlation_id,
+            policy_version=policy_version,
+            fingerprint=fingerprint,
+            owner=str(uuid4()),
+        )
+        if acquisition.result is not None:
+            return acquisition.result
+        claim = acquisition.claim
+        if claim is None:
+            raise RuntimeError("learning acquisition returned no claim or result")
         started_at = self._clock()
         self._publish_learning(request, EventType.LEARNING_STARTED, {})
         candidates = self._candidates(request)
@@ -253,7 +268,7 @@ class LearningService:
         )
         completed_at = self._clock()
         result = LearningResult(
-            learning_id=self._id_generator(),
+            learning_id=claim.learning_id,
             learning_request_id=request.learning_request_id,
             organization_id=request.organization_id,
             session_id=request.session_id,
@@ -261,8 +276,11 @@ class LearningService:
             correlation_id=request.correlation_id,
             execution_id=request.execution_id,
             observation_id=request.observation_result.observation_id,
+            policy_version=policy_version,
+            fingerprint=fingerprint,
             status=LearningStatus.COMPLETED,
             candidates=candidates,
+            validations=validations,
             validated_candidates=validated_candidates,
             rejected_candidates=rejected_candidates,
             human_review_candidates=human_review_candidates,
@@ -283,11 +301,21 @@ class LearningService:
             warnings=request.observation_result.warnings,
             safe_metadata=dict(request.safe_metadata),
         )
+        result = self._repository.complete(
+            claim=claim,
+            result=result,
+            validations=validations,
+        )
         self._idempotency_provider.put(key, fingerprint, result)
         self._publish_learning(
             request,
             EventType.LEARNING_COMPLETED,
-            {"learning_id": str(result.learning_id), "stored": len(stored)},
+            {
+                "learning_id": str(result.learning_id),
+                "status": result.status.value,
+                "fingerprint": result.fingerprint,
+                "durable_reference": f"learning:{result.learning_id}",
+            },
         )
         return result
 
@@ -629,7 +657,10 @@ class LearningService:
                     "observation_id": str(request.observation_result.observation_id),
                     **payload,
                 },
-                metadata=EventMetadata(correlation_id=request.correlation_id),
+                metadata=EventMetadata(
+                    correlation_id=request.correlation_id,
+                    causation_id=request.observation_result.source_event_id,
+                ),
                 priority=EventPriority.NORMAL,
             )
         )
@@ -659,9 +690,32 @@ class LearningService:
                 "debate_report",
             },
         )
+        data["policy_version"] = "learning-config-v1"
+        data["observation_fingerprint"] = request.observation_result.fingerprint
         return hashlib.sha256(
             json.dumps(data, sort_keys=True, default=str).encode()
         ).hexdigest()
+
+    def _validate_canonical_observation(self, request: LearningRequest) -> None:
+        if self._observation_repository is None or request.execution_id is None:
+            return
+        persisted = self._observation_repository.get(
+            request.organization_id, request.execution_id
+        )
+        observation = request.observation_result
+        if persisted is None or (
+            persisted.observation_id != observation.observation_id
+            or persisted.organization_id != request.organization_id
+            or persisted.session_id != request.session_id
+            or persisted.execution_id != request.execution_id
+            or persisted.correlation_id != request.correlation_id
+            or persisted.fingerprint != observation.fingerprint
+            or persisted.execution_result_fingerprint
+            != observation.execution_result_fingerprint
+        ):
+            raise ObservationConflictError(
+                "learning requires the matching persisted canonical observation"
+            )
 
     @staticmethod
     def _execution_status(request: LearningRequest) -> str:

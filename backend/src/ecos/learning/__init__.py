@@ -19,6 +19,7 @@ from .models import (
     PatternSignal,
     RelationshipType,
 )
+from .postgres_repository import PostgresLearningRepository
 from .provider import (
     DefaultLearningPolicyProvider,
     InMemoryLearningHistoryProvider,
@@ -26,6 +27,15 @@ from .provider import (
     LearningHistoryProvider,
     LearningIdempotencyProvider,
     LearningPolicyProvider,
+)
+from .repository import (
+    InMemoryLearningRepository,
+    LearningAcquisition,
+    LearningClaim,
+    LearningClaimUnavailableError,
+    LearningConflictError,
+    LearningRepository,
+    LearningRepositoryError,
 )
 from .service import LearningConfig, LearningService
 
@@ -35,9 +45,14 @@ __all__ = [
     "DefaultLearningPolicyProvider",
     "InMemoryLearningHistoryProvider",
     "InMemoryLearningIdempotencyProvider",
+    "InMemoryLearningRepository",
     "LearningCandidate",
+    "LearningAcquisition",
+    "LearningClaim",
+    "LearningClaimUnavailableError",
     "LearningCategory",
     "LearningConfig",
+    "LearningConflictError",
     "LearningEvidence",
     "LearningFailure",
     "LearningHistoryProvider",
@@ -45,6 +60,8 @@ __all__ = [
     "LearningObject",
     "LearningPolicyProvider",
     "LearningRequest",
+    "LearningRepository",
+    "LearningRepositoryError",
     "LearningResult",
     "LearningService",
     "LearningSource",
@@ -54,5 +71,6 @@ __all__ = [
     "LearningValidationStatus",
     "MemoryUpdateProposal",
     "PatternSignal",
+    "PostgresLearningRepository",
     "RelationshipType",
 ]

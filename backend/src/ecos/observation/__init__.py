@@ -31,6 +31,7 @@ from .models import (
     ObservedOutcomeStatus,
     OutcomeComparison,
 )
+from .postgres_repository import PostgresObservationRepository
 from .provider import (
     FeedbackProvider,
     InMemoryFeedbackProvider,
@@ -38,6 +39,12 @@ from .provider import (
     InMemoryObservationIdempotencyProvider,
     MeasurementProvider,
     ObservationIdempotencyProvider,
+)
+from .repository import (
+    InMemoryObservationRepository,
+    ObservationConflictError,
+    ObservationRepository,
+    ObservationRepositoryError,
 )
 
 __all__ = [
@@ -53,11 +60,13 @@ __all__ = [
     "InMemoryFeedbackProvider",
     "InMemoryMeasurementProvider",
     "InMemoryObservationIdempotencyProvider",
+    "InMemoryObservationRepository",
     "Measurement",
     "MeasurementProvider",
     "MeasurementSource",
     "MeasurementValueType",
     "ObservationConfig",
+    "ObservationConflictError",
     "ObservationContext",
     "ObservationEngine",
     "ObservationError",
@@ -66,6 +75,8 @@ __all__ = [
     "ObservationIdempotencyConflictError",
     "ObservationIdempotencyProvider",
     "ObservationQuality",
+    "ObservationRepository",
+    "ObservationRepositoryError",
     "ObservationRequest",
     "ObservationResult",
     "ObservationSourceType",
@@ -75,4 +86,5 @@ __all__ = [
     "ObservedOutcome",
     "ObservedOutcomeStatus",
     "OutcomeComparison",
+    "PostgresObservationRepository",
 ]
