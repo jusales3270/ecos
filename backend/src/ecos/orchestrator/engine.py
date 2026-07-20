@@ -375,7 +375,7 @@ class Orchestrator:
                     attempt,
                 )
                 await self._sleeper(float(stage.retry_policy.backoff_seconds))
-        if stage.optional:
+        if stage.optional and stage.engine != "execution":
             skipped = self._skipped_result(stage, state, "optional_stage_failed")
             state.stage_results[stage_id] = skipped
             self._publish(state.orchestration_input, EventType.STAGE_SKIPPED, stage)
@@ -758,6 +758,11 @@ class Orchestrator:
             raise InvalidResultError("executor did not complete the stage")
         if stage.required and result.output is None:
             raise RequiredOutputMissingError("required stage output is missing")
+        if stage.engine == "execution":
+            output_status = getattr(result.output, "status", None)
+            output_status_value = getattr(output_status, "value", output_status)
+            if output_status_value is not None and output_status_value != "completed":
+                raise InvalidResultError("execution engine did not complete")
 
     def _validate_success(
         self,
@@ -783,12 +788,35 @@ class Orchestrator:
         orchestration_input: OrchestrationInput,
         state: ResumableOrchestrationState,
     ) -> None:
+        if state.pipeline_status is not PipelineExecutionStatus.WAITING_APPROVAL:
+            raise IncompatiblePlanError("resume state is not waiting for approval")
         if state.plan_id != orchestration_input.cognitive_plan.plan_id:
             raise IncompatiblePlanError("resume plan mismatch")
         if state.session_id != orchestration_input.session_id:
             raise IncompatibleSessionError("resume session mismatch")
         if state.organization_id != orchestration_input.organization_id:
             raise IncompatibleSessionError("resume organization mismatch")
+        if state.correlation_id != orchestration_input.correlation_id:
+            raise IncompatibleSessionError("resume correlation mismatch")
+        stage_results = {item.stage_id: item for item in state.stage_results}
+        if len(stage_results) != len(state.stage_results):
+            raise PipelineInconsistentError("resume state has duplicate stage results")
+        if set(state.completed_stage_ids) != set(stage_results):
+            raise PipelineInconsistentError("resume completed stages are inconsistent")
+        stages = tuple(
+            orchestration_input.cognitive_plan.pipeline.steps
+            if orchestration_input.cognitive_plan.pipeline
+            else orchestration_input.cognitive_plan.stages
+        )
+        execution_stage_ids = {
+            self._stage_id(stage) for stage in stages if stage.engine == "execution"
+        }
+        if state.blocked_stage not in execution_stage_ids:
+            raise PipelineInconsistentError("resume blocked stage is not execution")
+        if state.blocked_stage in stage_results:
+            raise PipelineInconsistentError(
+                "blocked execution stage is already completed"
+            )
 
     def _waiting_approval_result(
         self,
@@ -806,6 +834,23 @@ class Orchestrator:
             0.0,
         )
         now = self._now()
+        blocked_stage = next(
+            (
+                item.stage_id
+                for item in reversed(state.timeline)
+                if item.entry_type is TimelineEntryType.BLOCK
+                and item.engine == "execution"
+            ),
+            next(
+                (
+                    self._stage_id(stage)
+                    for stage in orchestration_input.cognitive_plan.pipeline.steps
+                    if stage.engine == "execution"
+                    and self._stage_id(stage) not in state.stage_results
+                ),
+                None,
+            ),
+        )
         resumable = ResumableOrchestrationState(
             execution_id=state.execution_id,
             plan_id=orchestration_input.cognitive_plan.plan_id,
@@ -813,7 +858,7 @@ class Orchestrator:
             organization_id=orchestration_input.organization_id,
             correlation_id=orchestration_input.correlation_id,
             pipeline_status=PipelineExecutionStatus.WAITING_APPROVAL,
-            blocked_stage=None,
+            blocked_stage=blocked_stage,
             completed_stage_ids=tuple(state.stage_results),
             stage_results=tuple(state.stage_results.values()),
             attempts=state.attempts,

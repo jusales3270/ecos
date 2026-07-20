@@ -73,7 +73,17 @@ class SaraInteractionRequest(BaseModel):
 class ApprovalDecisionRequest(BaseModel):
     """Human approval decision body."""
 
+    model_config = ConfigDict(extra="forbid")
+
     reason: str | None = Field(default=None, max_length=1000)
+
+
+class ApprovalRejectionRequest(BaseModel):
+    """Governed human rejection body with mandatory justification."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 def container(request: Request) -> Container:
@@ -351,12 +361,13 @@ def approve(
     request: Request,
     principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
     ops: Annotated[OperationalService, Depends(operational)],
+    payload: ApprovalDecisionRequest | None = None,
 ):
     return ops.decide_approval(
         principal_,
         approval_id,
         approve=True,
-        reason=None,
+        reason=None if payload is None else payload.reason,
         idempotency_key=request.headers.get("Idempotency-Key"),
     )
 
@@ -364,7 +375,7 @@ def approve(
 @router.post("/approvals/{approval_id}/reject")
 def reject(
     approval_id: UUID,
-    payload: ApprovalDecisionRequest,
+    payload: ApprovalRejectionRequest,
     request: Request,
     principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
     ops: Annotated[OperationalService, Depends(operational)],

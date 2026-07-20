@@ -20,6 +20,7 @@ from ecos.core import Container, Settings
 from ecos.domain import CognitiveSession, Objective, SessionStage
 from ecos.governance import (
     ApprovalDecision,
+    ApprovalRequestStatus,
     GovernanceResult,
     GovernanceResultStatus,
     HumanDecision,
@@ -28,6 +29,7 @@ from ecos.governance import (
 from ecos.main import app
 from ecos.operational.service import DEMO_OPERATOR, DEMO_ORG_A
 from ecos.orchestrator import EngineExecutor, PipelineExecutionStatus
+from ecos.orchestrator.exceptions import IncompatiblePlanError, RequiredStageFailedError
 from ecos.runtime import (
     ArtifactEnvelope,
     InvalidArtifactError,
@@ -78,6 +80,26 @@ class CountingExecutor(EngineExecutor):
     def execute(self, context):
         self.calls += 1
         return self.delegate.execute(context)
+
+
+class FailingExecutor(EngineExecutor):
+    """Fail deterministically when the selected runtime stage is invoked."""
+
+    def __init__(self, engine_type: str) -> None:
+        self._engine_type = engine_type
+        self.calls = 0
+
+    @property
+    def engine_type(self) -> str:
+        return self._engine_type
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def execute(self, _context):
+        self.calls += 1
+        raise RuntimeError("connector failed")
 
 
 def _make_runtime_case(
@@ -304,6 +326,13 @@ def test_start_uses_received_session_scope_and_persists_typed_checkpoint(
     assert checkpoint.correlation_id == command.correlation_id
     assert checkpoint.version == 1
     assert checkpoint.resumable_state is not None
+    execution_stage = next(
+        step
+        for step in checkpoint.cognitive_plan.pipeline.steps
+        if step.engine == "execution"
+    )
+    assert checkpoint.resumable_state.blocked_stage == execution_stage.stage_id
+    assert checkpoint.resumable_state.correlation_id == command.correlation_id
     assert checkpoint.stage_results
     assert all(item.output.artifact_type != "Any" for item in checkpoint.stage_results)
     restored = checkpoint.model_validate(checkpoint.model_dump(mode="json"))
@@ -823,6 +852,10 @@ def test_resume_receives_reloaded_executing_session_and_never_paused(
         )
         assert executing is not None
         assert executing.status is RuntimeCheckpointStatus.EXECUTING
+        assert orchestration_input.correlation_id == command.correlation_id
+        assert state.correlation_id == command.correlation_id
+        assert executing.resumable_state is not None
+        assert state.execution_id == executing.resumable_state.execution_id
         return original_resume(orchestration_input, state)
 
     monkeypatch.setattr(container.runtime_checkpoint_repository, "save", capture_save)
@@ -1251,6 +1284,112 @@ def test_different_decision_in_executing_checkpoint_is_rejected(
         container.runtime_engine.resume_session(different)
 
 
+def test_concurrent_final_approvals_execute_exactly_once(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+) -> None:
+    container, _, command = runtime_case
+    execution_counter = CountingExecutor(container.orchestrator._executors["execution"])
+    container.orchestrator._executors["execution"] = execution_counter
+    final_command = _prepare_final_resume(container, command)
+    checkpoint = container.authenticated_runtime_service.get_checkpoint(
+        command.organization_id, command.session_id
+    )
+    assert checkpoint is not None
+    governance = _governance(container, checkpoint.governance_result)
+    request = governance.approval_request
+    assert request is not None
+    competing_approver = _create_board_approvers(container, 1)[0]
+    competing_command = _resume_command(
+        command,
+        competing_approver,
+        _approval_decision(
+            command,
+            checkpoint,
+            request.approval_request_id,
+            competing_approver,
+        ),
+    )
+
+    def resume(value: ResumeSessionCommand):
+        try:
+            return container.runtime_engine.resume_session(value)
+        except RuntimeCheckpointConflictError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(resume, (final_command, competing_command)))
+
+    assert (
+        sum(
+            item.status is PipelineExecutionStatus.COMPLETED
+            for item in results
+            if not isinstance(item, Exception)
+        )
+        == 1
+    )
+    assert (
+        sum(isinstance(item, RuntimeCheckpointConflictError) for item in results) == 1
+    )
+    assert execution_counter.calls == 1
+
+
+def test_resume_rejects_checkpoint_state_that_is_not_waiting_approval(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+) -> None:
+    container, _, command = runtime_case
+    execution_counter = CountingExecutor(container.orchestrator._executors["execution"])
+    container.orchestrator._executors["execution"] = execution_counter
+    final_command = _prepare_final_resume(container, command)
+    checkpoint = container.authenticated_runtime_service.get_checkpoint(
+        command.organization_id, command.session_id
+    )
+    assert checkpoint is not None
+    assert checkpoint.resumable_state is not None
+    invalid = checkpoint.model_copy(
+        update={
+            "resumable_state": checkpoint.resumable_state.model_copy(
+                update={"pipeline_status": PipelineExecutionStatus.COMPLETED}
+            ),
+            "version": checkpoint.version + 1,
+            "updated_at": datetime.now(UTC),
+        }
+    )
+    container.runtime_checkpoint_repository.save(
+        invalid, expected_version=checkpoint.version
+    )
+
+    with pytest.raises(IncompatiblePlanError, match="not waiting"):
+        container.runtime_engine.resume_session(final_command)
+
+    failed = container.authenticated_runtime_service.get_checkpoint(
+        command.organization_id, command.session_id
+    )
+    assert failed is not None
+    assert failed.status is RuntimeCheckpointStatus.FAILED
+    assert execution_counter.calls == 0
+
+
+def test_execution_failure_persists_failed_checkpoint_and_error_state(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+) -> None:
+    container, _, command = runtime_case
+    execution_executor = FailingExecutor("execution")
+    container.orchestrator._executors["execution"] = execution_executor
+    final_command = _prepare_final_resume(container, command)
+
+    with pytest.raises(RequiredStageFailedError, match="execution failed"):
+        container.runtime_engine.resume_session(final_command)
+    failed = container.authenticated_runtime_service.get_checkpoint(
+        command.organization_id, command.session_id
+    )
+    assert failed is not None
+    assert failed.status is RuntimeCheckpointStatus.FAILED
+    session = container.session_service.get_session(command.session_id)
+    assert session is not None
+    assert session.state.lifecycle_status is SessionLifecycleStatus.FAILED
+    assert execution_executor.calls == 1
+
+
 def test_executing_checkpoint_persistence_failure_prevents_execution(
     runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
     monkeypatch: pytest.MonkeyPatch,
@@ -1523,6 +1662,57 @@ def test_requester_cannot_satisfy_own_approval(
                 approval_decision=decision,
             )
         )
+
+
+def test_human_rejection_is_terminal_and_never_executes(
+    runtime_case: tuple[Container, ManagedSession, StartExistingSessionCommand],
+) -> None:
+    container, _, command = runtime_case
+    execution_counter = CountingExecutor(container.orchestrator._executors["execution"])
+    container.orchestrator._executors["execution"] = execution_counter
+    container.runtime_engine.start_existing_session(command)
+    checkpoint = container.authenticated_runtime_service.get_checkpoint(
+        command.organization_id, command.session_id
+    )
+    assert checkpoint is not None
+    governance = _governance(container, checkpoint.governance_result)
+    request = governance.approval_request
+    assert request is not None
+    approver_id = _create_board_approvers(container, 1)[0]
+    decision = _approval_decision(
+        command,
+        checkpoint,
+        request.approval_request_id,
+        approver_id,
+    ).model_copy(update={"decision": HumanDecision.REJECT, "reason": "unsafe"})
+
+    result = container.runtime_engine.resume_session(
+        _resume_command(command, approver_id, decision)
+    )
+
+    assert result.status is PipelineExecutionStatus.FAILED
+    rejected = container.authenticated_runtime_service.get_checkpoint(
+        command.organization_id, command.session_id
+    )
+    assert rejected is not None
+    assert rejected.status is RuntimeCheckpointStatus.FAILED
+    rejected_governance = _governance(container, rejected.governance_result)
+    assert rejected_governance.approval_request is not None
+    assert rejected_governance.approval_request.status is ApprovalRequestStatus.REJECTED
+    assert rejected_governance.approval_request.current_rejections[0].reason == "unsafe"
+    assert rejected_governance.audit_records[-1].action == "approval_rejected"
+    session = container.session_service.get_session(command.session_id)
+    assert session is not None
+    assert session.state.lifecycle_status is SessionLifecycleStatus.FAILED
+    assert session.state.last_error == "RUNTIME_REJECTED"
+    assert execution_counter.calls == 0
+
+    replay = container.runtime_engine.resume_session(
+        _resume_command(command, approver_id, decision)
+    )
+    assert replay.status is PipelineExecutionStatus.FAILED
+    assert replay.checkpoint_version == rejected.version
+    assert execution_counter.calls == 0
 
 
 def test_runtime_demo_contract_is_unchanged() -> None:

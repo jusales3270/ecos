@@ -38,6 +38,7 @@ class ApprovalStatus(StrEnum):
     """Human approval lifecycle states."""
 
     PENDING = "pending"
+    PARTIALLY_APPROVED = "partially_approved"
     APPROVED = "approved"
     REJECTED = "rejected"
 
@@ -105,6 +106,16 @@ class ApprovalView(OperationalModel):
     rejection_reason: str | None = None
     correlation_id: UUID
     created_at: datetime = Field(default_factory=utc_now)
+    action_scope: str | None = None
+    required_roles: tuple[str, ...] = Field(default_factory=tuple)
+    minimum_approvals: int = Field(default=1, ge=1)
+    approvals_recorded: int = Field(default=0, ge=0)
+    expires_at: datetime | None = None
+    runtime_status: (
+        Literal["waiting_approval", "executing", "completed", "error"] | None
+    ) = None
+    checkpoint_version: int | None = Field(default=None, ge=1)
+    error_code: str | None = None
 
 
 class ExecutionView(OperationalModel):

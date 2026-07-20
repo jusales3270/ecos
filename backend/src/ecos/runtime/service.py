@@ -405,6 +405,11 @@ class AuthenticatedRuntimeService:
                 "completed runtime checkpoint cannot be resumed"
             )
         if checkpoint.status is RuntimeCheckpointStatus.FAILED:
+            governance = self._governance(checkpoint)
+            if self._decision_was_recorded(
+                governance, command.approval_decision.approval_decision_id
+            ):
+                return self._result(checkpoint, PipelineExecutionStatus.FAILED)
             raise RuntimeCheckpointConflictError(
                 "failed runtime checkpoint cannot be resumed"
             )
@@ -422,6 +427,38 @@ class AuthenticatedRuntimeService:
                 decision=command.approval_decision,
                 audit_records=governance.audit_records,
             )
+            if updated_request.status is ApprovalRequestStatus.REJECTED:
+                rejected_governance = governance.model_copy(
+                    update={
+                        "approval_request": updated_request,
+                        "approval_state": governance.approval_state.model_copy(
+                            update={
+                                "approval_request": updated_request,
+                                "decisions": (
+                                    *updated_request.current_approvals,
+                                    *updated_request.current_rejections,
+                                ),
+                                "status": updated_request.status,
+                            }
+                        )
+                        if governance.approval_state is not None
+                        else None,
+                        "audit_records": audits,
+                        "execution_authorized": False,
+                        "continuation_allowed": False,
+                        "human_review_required": False,
+                    }
+                )
+                rejected = self._replace_governance(checkpoint, rejected_governance)
+                rejected = rejected.model_copy(
+                    update={"status": RuntimeCheckpointStatus.FAILED}
+                )
+                stored = self._checkpoints.save(
+                    rejected,
+                    expected_version=checkpoint.version,
+                )
+                self._record_rejection(command.organization_id, command.session_id)
+                return self._result(stored, PipelineExecutionStatus.FAILED)
             if updated_request.status is not ApprovalRequestStatus.GRANTED:
                 partial = governance.model_copy(
                     update={
@@ -468,6 +505,8 @@ class AuthenticatedRuntimeService:
         if resumable is None:
             raise RuntimeCheckpointConflictError("checkpoint is not resumable")
         restored = self._codec.deserialize_resume_state(resumable)
+        if restored.execution_id != resumable.execution_id:
+            raise RuntimeCheckpointConflictError("runtime execution_id mismatch")
         should_resume = self._record_resume(
             command.organization_id,
             command.session_id,
@@ -502,8 +541,11 @@ class AuthenticatedRuntimeService:
             )
             raise
         session = self._scoped_session(command.organization_id, command.session_id)
+        resume_command = command.model_copy(
+            update={"correlation_id": checkpoint.correlation_id}
+        )
         input_ = self._orchestration_input(
-            command,
+            resume_command,
             session,
             checkpoint.cognitive_plan,
             governance_result=authorized,
@@ -559,6 +601,10 @@ class AuthenticatedRuntimeService:
     ) -> RuntimeCheckpoint | None:
         """Return one checkpoint through its mandatory organization scope."""
         return self._checkpoints.get(organization_id, session_id)
+
+    def governance_result(self, checkpoint: RuntimeCheckpoint) -> GovernanceResult:
+        """Return the validated governance result stored in a runtime checkpoint."""
+        return self._governance(checkpoint)
 
     def _scoped_session(
         self, organization_id: UUID, session_id: UUID
@@ -722,6 +768,36 @@ class AuthenticatedRuntimeService:
             session.state.model_copy(
                 update={
                     "lifecycle_status": SessionLifecycleStatus.FAILED,
+                    "updated_at": self._now(),
+                }
+            )
+        )
+
+    def _record_rejection(self, organization_id: UUID, session_id: UUID) -> None:
+        """Make a governed human rejection terminal without entering execution."""
+        session = self._scoped_session(organization_id, session_id)
+        if session.state.lifecycle_status is SessionLifecycleStatus.FAILED:
+            return
+        if session.state.lifecycle_status is not SessionLifecycleStatus.PAUSED:
+            raise RuntimeCheckpointConflictError(
+                "runtime session cannot reject from "
+                f"{session.state.lifecycle_status.value}"
+            )
+        self._session_service.record_transition(
+            SessionTransition(
+                session_id=session.session.id,
+                transition_type=TransitionType.FAIL,
+                from_status=SessionLifecycleStatus.PAUSED,
+                to_status=SessionLifecycleStatus.FAILED,
+                reason="Runtime rejected by an authorized human decision.",
+            )
+        )
+        self._session_service.update_state(
+            session.state.model_copy(
+                update={
+                    "lifecycle_status": SessionLifecycleStatus.FAILED,
+                    "active_engine": None,
+                    "last_error": "RUNTIME_REJECTED",
                     "updated_at": self._now(),
                 }
             )
