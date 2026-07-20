@@ -294,8 +294,11 @@ class LearningResult(LearningModel):
     correlation_id: UUID
     execution_id: UUID | None = None
     observation_id: UUID
+    policy_version: str = Field(min_length=1, max_length=100)
+    fingerprint: str = Field(min_length=64, max_length=64)
     status: LearningStatus
     candidates: tuple[LearningCandidate, ...]
+    validations: tuple[LearningValidation, ...]
     validated_candidates: tuple[LearningCandidate, ...]
     rejected_candidates: tuple[LearningCandidate, ...]
     human_review_candidates: tuple[LearningCandidate, ...]

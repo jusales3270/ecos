@@ -40,6 +40,8 @@ def observation(*, confidence: float = 0.91) -> ObservationResult:
         source_type=ObservationSourceType.DECISION_OUTCOME,
         source_id="source:1",
         status=ObservedOutcomeStatus.SUCCESSFUL,
+        fingerprint="0" * 64,
+        execution_result_fingerprint="0" * 64,
         observed_outcomes=(
             ObservedOutcome(
                 outcome_id="outcome:1",

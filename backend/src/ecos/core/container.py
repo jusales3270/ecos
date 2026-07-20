@@ -44,7 +44,12 @@ from ecos.knowledge import (
     KnowledgeProjector,
 )
 from ecos.knowledge.postgres import PostgresKnowledgeGraphRepository
-from ecos.learning import LearningService
+from ecos.learning import (
+    InMemoryLearningRepository,
+    LearningRepository,
+    LearningService,
+    PostgresLearningRepository,
+)
 from ecos.memory import MemoryRepository, MemoryService, PostgresMemoryRepository
 from ecos.observability import (
     AlertProjector,
@@ -69,8 +74,11 @@ from ecos.observation import (
     InMemoryFeedbackProvider,
     InMemoryMeasurementProvider,
     InMemoryObservationIdempotencyProvider,
+    InMemoryObservationRepository,
     ObservationConfig,
     ObservationEngine,
+    ObservationRepository,
+    PostgresObservationRepository,
 )
 from ecos.operational import OperationalService
 from ecos.operational.postgres import PostgresOperationalRepository
@@ -339,7 +347,27 @@ class Container:
             )
         else:
             self.context_provider = FakeContextProvider(organization.id, objective)
-        self.learning_service = LearningService(self.memory_service, self.event_service)
+        self.observation_repository: ObservationRepository
+        self.learning_repository: LearningRepository
+        if (
+            self.settings.runtime_checkpoint_repository == "postgres"
+            or self.settings.session_repository == "postgres"
+        ):
+            self.observation_repository = PostgresObservationRepository(
+                self.settings.database_url
+            )
+            self.learning_repository = PostgresLearningRepository(
+                self.settings.database_url
+            )
+        else:
+            self.observation_repository = InMemoryObservationRepository()
+            self.learning_repository = InMemoryLearningRepository()
+        self.learning_service = LearningService(
+            self.memory_service,
+            self.event_service,
+            repository=self.learning_repository,
+            observation_repository=self.observation_repository,
+        )
         self.observation_engine = ObservationEngine(
             measurement_provider=InMemoryMeasurementProvider(),
             feedback_provider=InMemoryFeedbackProvider(),
@@ -348,6 +376,7 @@ class Container:
             clock=lambda: datetime.now(UTC),
             id_generator=uuid4,
             config=ObservationConfig(),
+            repository=self.observation_repository,
         )
         self.session_service = SessionService(self.session_repository)
         self.tenant_memory_service = TenantScopedMemoryService(
@@ -450,7 +479,10 @@ class Container:
         self.idempotency_provider = InMemoryIdempotencyProvider()
         self.human_task_provider = InMemoryHumanTaskProvider()
         self.execution_result_repository: ExecutionResultRepository
-        if self.settings.runtime_checkpoint_repository == "postgres":
+        if (
+            self.settings.runtime_checkpoint_repository == "postgres"
+            or self.settings.session_repository == "postgres"
+        ):
             self.execution_result_repository = PostgresExecutionResultRepository(
                 self.settings.database_url
             )

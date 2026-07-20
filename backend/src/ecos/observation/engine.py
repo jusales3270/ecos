@@ -37,6 +37,10 @@ from ecos.observation.provider import (
     MeasurementProvider,
     ObservationIdempotencyProvider,
 )
+from ecos.observation.repository import (
+    InMemoryObservationRepository,
+    ObservationRepository,
+)
 
 Clock = Callable[[], datetime]
 IdGenerator = Callable[[], UUID]
@@ -70,6 +74,7 @@ class ObservationEngine:
         clock: Clock,
         id_generator: IdGenerator,
         config: ObservationConfig,
+        repository: ObservationRepository | None = None,
     ) -> None:
         self._measurement_provider = measurement_provider
         self._feedback_provider = feedback_provider
@@ -78,10 +83,27 @@ class ObservationEngine:
         self._clock = clock
         self._id_generator = id_generator
         self._config = config
+        self._repository = repository or InMemoryObservationRepository()
 
     def observe(self, request: ObservationRequest) -> ObservationResult:
         """Observe facts and return an immutable ObservationResult."""
         self._validate_request(request)
+        execution_fingerprint = self._execution_result_fingerprint(request)
+        canonical_fingerprint = self._canonical_fingerprint(
+            request, execution_fingerprint
+        )
+        if self._repository is not None and request.execution_id is not None:
+            persisted = self._repository.get(
+                request.organization_id, request.execution_id
+            )
+            if persisted is not None:
+                self._validate_persisted(
+                    request,
+                    persisted,
+                    canonical_fingerprint,
+                    execution_fingerprint,
+                )
+                return persisted
         key = self._idempotency_key(request)
         fingerprint = self._fingerprint(request)
         existing = self._idempotency_provider.get(key)
@@ -192,8 +214,9 @@ class ObservationEngine:
             ),
             reason_codes=(f"observation_{status.value}",),
         )
+        observation_id = self._id_generator()
         result = ObservationResult(
-            observation_id=self._id_generator(),
+            observation_id=observation_id,
             observation_request_id=request.observation_request_id,
             organization_id=request.organization_id,
             session_id=request.session_id,
@@ -204,6 +227,8 @@ class ObservationEngine:
             source_type=request.source_type,
             source_id=request.source_id,
             status=status,
+            fingerprint=canonical_fingerprint,
+            execution_result_fingerprint=execution_fingerprint,
             observed_outcomes=(observed,),
             comparisons=comparisons,
             deviations=deviations,
@@ -222,14 +247,23 @@ class ObservationEngine:
             warnings=quality.warnings,
             safe_metadata=dict(request.safe_metadata),
         )
+        if self._repository is not None and request.execution_id is not None:
+            result = self._repository.save(result)
+            if result.observation_id != observation_id:
+                self._idempotency_provider.put(key, fingerprint, result)
+                return result
         self._idempotency_provider.put(key, fingerprint, result)
         self._publish(
             request,
             EventType.OBSERVATION_COMPLETED,
             {
                 "observation_id": str(result.observation_id),
-                "status": status.value,
-                "outcome_score": result.outcome_score,
+                "execution_id": None
+                if result.execution_id is None
+                else str(result.execution_id),
+                "status": result.status.value,
+                "fingerprint": result.fingerprint,
+                "durable_reference": f"observation:{result.observation_id}",
             },
         )
         return result
@@ -746,9 +780,11 @@ class ObservationEngine:
                 event_type=event_type,
                 source="observation",
                 session_id=request.session_id,
+                organization_id=request.organization_id,
                 payload=safe_payload,
                 metadata=EventMetadata(
                     correlation_id=request.correlation_id,
+                    causation_id=request.source_event_id,
                     attributes={
                         "organization_id": str(request.organization_id),
                         "plan_id": str(request.plan_id),
@@ -798,6 +834,47 @@ class ObservationEngine:
         return hashlib.sha256(
             json.dumps(data, sort_keys=True, default=str).encode()
         ).hexdigest()
+
+    @staticmethod
+    def _execution_result_fingerprint(request: ObservationRequest) -> str:
+        value = getattr(request.execution_result, "fingerprint", None)
+        if isinstance(value, str) and len(value) == 64:
+            return value
+        return hashlib.sha256(b"no-execution-result").hexdigest()
+
+    @staticmethod
+    def _canonical_fingerprint(
+        request: ObservationRequest, execution_result_fingerprint: str
+    ) -> str:
+        payload = {
+            "organization_id": str(request.organization_id),
+            "session_id": str(request.session_id),
+            "execution_id": None
+            if request.execution_id is None
+            else str(request.execution_id),
+            "correlation_id": str(request.correlation_id),
+            "execution_result_fingerprint": execution_result_fingerprint,
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def _validate_persisted(
+        request: ObservationRequest,
+        result: ObservationResult,
+        fingerprint: str,
+        execution_result_fingerprint: str,
+    ) -> None:
+        if (
+            result.organization_id != request.organization_id
+            or result.session_id != request.session_id
+            or result.execution_id != request.execution_id
+            or result.correlation_id != request.correlation_id
+            or result.fingerprint != fingerprint
+            or result.execution_result_fingerprint != execution_result_fingerprint
+        ):
+            raise ObservationIdempotencyConflictError(
+                "persisted observation scope or fingerprint conflict"
+            )
 
     @staticmethod
     def _execution_status(request: ObservationRequest) -> str:

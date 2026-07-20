@@ -385,6 +385,8 @@ class ObservationResult(ObservationModel):
     source_type: ObservationSourceType
     source_id: str
     status: ObservedOutcomeStatus
+    fingerprint: str = Field(min_length=64, max_length=64)
+    execution_result_fingerprint: str = Field(min_length=64, max_length=64)
     observed_outcomes: tuple[ObservedOutcome, ...]
     comparisons: tuple[OutcomeComparison, ...]
     deviations: tuple[Deviation, ...]
