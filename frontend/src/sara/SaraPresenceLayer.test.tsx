@@ -80,6 +80,21 @@ describe("SARA runtime integration", () => {
     expect(stateCalls).toBe(1);
   });
 
+  it.each(["completed", "error"] as SaraRuntimeState[])("does not regress or poll after terminal %s", async (terminalState) => {
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("auth/me")) return Promise.resolve(jsonResponse(auth) as Response);
+      if (url.includes("/interactions")) return Promise.resolve(jsonResponse(interaction(terminalState)) as Response);
+      return Promise.resolve(jsonResponse({ session_id: sessionId, runtime: runtime("waiting_approval", 1) }) as Response);
+    });
+    renderLayer();
+    await submit("Estado terminal");
+    await waitFor(() => expect(document.querySelector(".sh-root")).toHaveAttribute("data-runtime-state", terminalState));
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(countStateRequests()).toBe(0);
+    expect(document.querySelector(".sh-root")).toHaveAttribute("data-runtime-state", terminalState);
+  });
+
   it("keeps the last confirmed visual state after a 304 response", async () => {
     vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);

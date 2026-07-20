@@ -48,7 +48,7 @@ export type Approval = {
   recommendation_id: string;
   requester_id: string;
   requester_email: string;
-  status: "pending" | "approved" | "rejected";
+  status: "pending" | "partially_approved" | "approved" | "rejected";
   risks: string[];
   plan: string[];
   required_independent_approver: boolean;
@@ -58,6 +58,14 @@ export type Approval = {
   rejection_reason: string | null;
   correlation_id: string;
   created_at: string;
+  action_scope: string | null;
+  required_roles: string[];
+  minimum_approvals: number;
+  approvals_recorded: number;
+  expires_at: string | null;
+  runtime_status: "waiting_approval" | "executing" | "completed" | "error" | null;
+  checkpoint_version: number | null;
+  error_code: string | null;
 };
 
 export type Execution = {
