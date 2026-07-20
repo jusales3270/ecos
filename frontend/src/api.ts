@@ -105,10 +105,11 @@ export const api = {
     request<Approval[]>(
       `/api/v1/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`
     ),
-  approve: (id: string) =>
+  approve: (id: string, reason: string) =>
     request<Approval>(`/api/v1/approvals/${id}/approve`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey("approval.approve") }
+      headers: { "Idempotency-Key": idempotencyKey("approval.approve") },
+      body: JSON.stringify({ reason })
     }),
   reject: (id: string, reason: string) =>
     request<Approval>(`/api/v1/approvals/${id}/reject`, {

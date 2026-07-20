@@ -404,17 +404,51 @@ export function ApprovalsPage() {
   const { auth } = useAuth();
   const { data, loading, error, setData } = useLoad<Approval[]>(() => api.approvals(), []);
   const [message, setMessage] = useState<string | null>(null);
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [deciding, setDeciding] = useState<string | null>(null);
   const mayApprove = can("decisions:approve", auth?.principal.permissions);
 
-  async function decide(id: string, approve: boolean) {
+  const refreshApprovals = useCallback(async () => {
+    const refreshed = await api.approvals();
+    setData(refreshed);
+  }, [setData]);
+
+  useEffect(() => {
+    if (!data?.some((item) => item.runtime_status === "executing")) return;
+    const timer = window.setInterval(() => {
+      void refreshApprovals().catch(() => undefined);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [data, refreshApprovals]);
+
+  async function decide(item: Approval, approve: boolean) {
+    const reason = reasons[item.approval_id]?.trim() ?? "";
     setMessage(null);
+    if (!reason) {
+      setMessage(`Informe uma justificativa para ${approve ? "aprovar" : "rejeitar"}.`);
+      return;
+    }
+    setDeciding(item.approval_id);
     try {
       const updated = approve
-        ? await api.approve(id)
-        : await api.reject(id, "Rejected from operational UI");
-      setData((data ?? []).map((item) => (item.approval_id === id ? updated : item)));
+        ? await api.approve(item.approval_id, reason)
+        : await api.reject(item.approval_id, reason);
+      setData((current) =>
+        (current ?? []).map((value) =>
+          value.approval_id === item.approval_id ? updated : value
+        )
+      );
+      setReasons((current) => ({ ...current, [item.approval_id]: "" }));
+      await refreshApprovals();
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Decisão recusada");
+      setMessage(approvalDecisionError(caught));
+      try {
+        await refreshApprovals();
+      } catch {
+        // Keep the confirmed card state when the refresh also fails.
+      }
+    } finally {
+      setDeciding(null);
     }
   }
 
@@ -427,32 +461,94 @@ export function ApprovalsPage() {
       {error ? <ErrorState>{error}</ErrorState> : null}
       <div className="approval-board">
         {(data ?? []).length === 0 && !loading ? <EmptyState>Nenhuma aprovação pendente.</EmptyState> : null}
-        {(data ?? []).map((item) => (
-          <Panel key={item.approval_id} title={item.requester_email}>
-            <Status value={item.status} />
-            <p>Correlation ID: <code>{item.correlation_id}</code></p>
-            <EvidenceList title="Plano aguardando decisão" items={item.plan} />
-            <EvidenceList title="Riscos declarados" items={item.risks} />
-            <div className="actions">
-              <button
-                disabled={!mayApprove || item.status !== "pending"}
-                onClick={() => void decide(item.approval_id, true)}
-              >
-                Aprovar
-              </button>
-              <button
-                disabled={!mayApprove || item.status !== "pending"}
-                className="secondary"
-                onClick={() => void decide(item.approval_id, false)}
-              >
-                Rejeitar
-              </button>
-            </div>
-          </Panel>
-        ))}
+        {(data ?? []).map((item) => {
+          const expired = Boolean(item.expires_at && Date.parse(item.expires_at) <= Date.now());
+          const terminal = item.status === "approved" || item.status === "rejected";
+          const alreadyDecided = item.decided_by === auth?.principal.user_id;
+          const roleAllowed =
+            item.runtime_status === null ||
+            (item.required_roles.length > 0 &&
+              item.required_roles.some((role) => auth?.principal.roles.includes(role)));
+          const disabled =
+            !mayApprove || !roleAllowed || deciding !== null || terminal || expired || alreadyDecided;
+          const remaining = Math.max(item.minimum_approvals - item.approvals_recorded, 0);
+          return (
+            <Panel key={item.approval_id} title={item.requester_email}>
+              <Status value={item.status} />
+              {item.runtime_status ? (
+                <p>Estado atual do runtime: <Status value={item.runtime_status} /></p>
+              ) : null}
+              <dl className="detail-list">
+                {item.action_scope ? <><dt>Ação ou escopo</dt><dd>{item.action_scope}</dd></> : null}
+                <dt>Solicitante</dt><dd>{item.requester_email}</dd>
+                <dt>Criação</dt><dd>{formatApprovalDate(item.created_at)}</dd>
+                {item.expires_at ? <><dt>Expiração</dt><dd>{formatApprovalDate(item.expires_at)}</dd></> : null}
+                {item.required_roles.length > 0 ? <><dt>Papéis exigidos</dt><dd>{item.required_roles.join(", ")}</dd></> : null}
+                <dt>Quorum mínimo</dt><dd>{item.minimum_approvals}</dd>
+                <dt>Aprovações registradas</dt><dd>{item.approvals_recorded}</dd>
+              </dl>
+              <p><strong>{item.approvals_recorded} de {item.minimum_approvals} aprovações</strong></p>
+              {item.status === "partially_approved" ? (
+                <p>{remaining} {remaining === 1 ? "decisão ainda aguarda" : "decisões ainda aguardam"} quorum.</p>
+              ) : null}
+              {expired ? <ErrorState>Esta solicitação de aprovação expirou.</ErrorState> : null}
+              {alreadyDecided && !terminal ? <p>Você já registrou uma decisão neste request.</p> : null}
+              {item.error_code === "RUNTIME_REJECTED" ? (
+                <ErrorState>Runtime rejeitado pela decisão humana (RUNTIME_REJECTED).</ErrorState>
+              ) : null}
+              <p>Correlation ID: <code>{item.correlation_id}</code></p>
+              <EvidenceList title="Plano aguardando decisão" items={item.plan} />
+              <EvidenceList title="Riscos declarados" items={item.risks} />
+              <label>
+                Justificativa
+                <textarea
+                  value={reasons[item.approval_id] ?? ""}
+                  disabled={disabled}
+                  maxLength={1000}
+                  onChange={(event) =>
+                    setReasons((current) => ({
+                      ...current,
+                      [item.approval_id]: event.target.value
+                    }))
+                  }
+                />
+              </label>
+              <div className="actions">
+                <button disabled={disabled} onClick={() => void decide(item, true)}>
+                  {deciding === item.approval_id ? "Registrando..." : "Aprovar"}
+                </button>
+                <button
+                  disabled={disabled}
+                  className="secondary"
+                  onClick={() => void decide(item, false)}
+                >
+                  {deciding === item.approval_id ? "Registrando..." : "Rejeitar"}
+                </button>
+              </div>
+            </Panel>
+          );
+        })}
       </div>
     </Page>
   );
+}
+
+function formatApprovalDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("pt-BR");
+}
+
+function approvalDecisionError(caught: unknown): string {
+  if (!(caught instanceof ApiError)) {
+    return caught instanceof Error
+      ? `Falha de rede ao registrar decisão: ${caught.message}`
+      : "Falha de rede ao registrar decisão.";
+  }
+  if (caught.status === 403) return "Você não tem permissão para registrar esta decisão.";
+  if (caught.status === 409) return "Conflito: a decisão não foi registrada. Atualize o estado e tente novamente.";
+  if (caught.status === 410) return "Esta solicitação de aprovação expirou.";
+  if (caught.status === 422) return "A justificativa ou os dados da decisão são inválidos.";
+  return caught.message || "Decisão recusada.";
 }
 
 export function ExecutionsPage() {
