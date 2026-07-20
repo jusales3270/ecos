@@ -11,6 +11,8 @@ from ecos.execution import (
     ExecutionAuthorization,
     ExecutionEngine,
     ExecutionRequest,
+    ExecutionResult,
+    ExecutionStatus,
     ExecutionType,
     ResourceRequirement,
 )
@@ -294,6 +296,8 @@ class LearningExecutor(RuntimeEngineExecutor):
                 session_id=context.session.session.id,
                 plan_id=context.plan.plan_id,
                 correlation_id=context.correlation_id,
+                execution_id=observation.execution_id,
+                observation_id=observation.observation_id,
                 observation_result=observation,
                 decision_package=decision_package,
                 recommendation=getattr(decision_package, "recommendation", None),
@@ -324,39 +328,171 @@ class ObservationExecutor(RuntimeEngineExecutor):
         execution_result = context.accumulated_context.get("execution")
         recommendation = getattr(decision_package, "recommendation", None)
         confidence = float(getattr(recommendation, "confidence", 0.0))
+        execution = (
+            execution_result if isinstance(execution_result, ExecutionResult) else None
+        )
+        source_type = (
+            ObservationSourceType.EXECUTION_RESULT
+            if execution is not None
+            else ObservationSourceType.DECISION_OUTCOME
+        )
+        source_id = (
+            f"execution:{execution.execution_id}"
+            if execution is not None
+            else f"decision:{context.stage.stage_id}"
+        )
         source = MeasurementSource(
-            source_type=ObservationSourceType.DECISION_OUTCOME,
-            source_id=f"decision:{context.stage.stage_id}",
+            source_type=source_type,
+            source_id=source_id,
             reliability=1.0,
             verified=True,
         )
-        measurement = Measurement(
-            measurement_id=f"measurement:{context.stage.stage_id}:confidence",
-            metric_key="recommendation_confidence",
-            value=confidence,
-            value_type=MeasurementValueType.SCORE,
-            source=source,
-            observed_at=_now(),
-            evidence_references=(f"decision:{context.stage.stage_id}",),
-            confidence=confidence,
-            verified=True,
-            reason_codes=("runtime_decision_output",),
-        )
-        expected = ExpectedOutcome(
-            expected_outcome_id=f"expected:{context.stage.stage_id}:confidence",
-            name="Recommendation confidence meets plan target",
-            description=(
-                "Compares declared plan target with observed recommendation confidence."
-            ),
-            metric_key="recommendation_confidence",
-            expected_value=context.plan.confidence_target,
-            comparison_operator=ComparisonOperator.GREATER_THAN_OR_EQUAL,
-            tolerance=0.0,
-            weight=1.0,
-            required=True,
-            source_reference=f"plan:{context.plan.plan_id}",
-            reason_codes=("plan_confidence_target",),
-        )
+        measurements: list[Measurement] = []
+        expected_outcomes: list[ExpectedOutcome] = []
+        if execution is not None:
+            evidence = [
+                f"execution_result:{execution.execution_id}:{execution.fingerprint}"
+            ]
+            evidence.extend(
+                f"execution_failure:{failure.failure_id}"
+                for failure in execution.failures
+            )
+            evidence.extend(
+                f"execution_artifact:{artifact.artifact_id}"
+                for artifact in execution.artifacts
+                if not artifact.sensitive
+            )
+            observed_at = _now()
+            measurements.extend(
+                (
+                    Measurement(
+                        measurement_id=(
+                            f"measurement:{context.stage.stage_id}:execution_status"
+                        ),
+                        metric_key="execution_status",
+                        value=execution.status.value,
+                        value_type=MeasurementValueType.STATUS,
+                        source=source,
+                        observed_at=observed_at,
+                        evidence_references=tuple(evidence),
+                        confidence=1.0,
+                        verified=True,
+                        reason_codes=("canonical_execution_result",),
+                    ),
+                    Measurement(
+                        measurement_id=(
+                            f"measurement:{context.stage.stage_id}:execution_duration"
+                        ),
+                        metric_key="execution_duration",
+                        value=execution.duration,
+                        value_type=MeasurementValueType.DURATION,
+                        unit="seconds",
+                        source=source,
+                        observed_at=observed_at,
+                        evidence_references=tuple(evidence[:1]),
+                        confidence=1.0,
+                        verified=True,
+                        reason_codes=("canonical_execution_metric",),
+                    ),
+                    Measurement(
+                        measurement_id=(
+                            f"measurement:{context.stage.stage_id}:failure_count"
+                        ),
+                        metric_key="execution_failure_count",
+                        value=len(execution.failures),
+                        value_type=MeasurementValueType.COUNT,
+                        source=source,
+                        observed_at=observed_at,
+                        evidence_references=tuple(evidence),
+                        confidence=1.0,
+                        verified=True,
+                        reason_codes=("canonical_execution_failures",),
+                    ),
+                    Measurement(
+                        measurement_id=(
+                            f"measurement:{context.stage.stage_id}:rollback_count"
+                        ),
+                        metric_key="execution_rollback_count",
+                        value=len(execution.rollback_results),
+                        value_type=MeasurementValueType.COUNT,
+                        source=source,
+                        observed_at=observed_at,
+                        evidence_references=tuple(evidence[:1]),
+                        confidence=1.0,
+                        verified=True,
+                        reason_codes=("canonical_execution_rollbacks",),
+                    ),
+                )
+            )
+            measurements.extend(
+                Measurement(
+                    measurement_id=(
+                        f"measurement:{context.stage.stage_id}:metric:{index}"
+                    ),
+                    metric_key=f"execution_metric:{metric.name}",
+                    value=metric.value,
+                    value_type=MeasurementValueType.NUMERIC,
+                    unit=metric.unit,
+                    source=source,
+                    observed_at=observed_at,
+                    evidence_references=tuple(evidence[:1]),
+                    confidence=1.0,
+                    verified=True,
+                    reason_codes=("canonical_execution_metric",),
+                )
+                for index, metric in enumerate(execution.metrics, 1)
+            )
+            expected_outcomes.append(
+                ExpectedOutcome(
+                    expected_outcome_id=(
+                        f"expected:{context.stage.stage_id}:execution_status"
+                    ),
+                    name="Execution completes successfully",
+                    description="Compares the canonical execution status with success.",
+                    metric_key="execution_status",
+                    expected_status=ExecutionStatus.COMPLETED.value,
+                    comparison_operator=ComparisonOperator.EQUALS,
+                    weight=1.0,
+                    required=True,
+                    source_reference=f"plan:{context.plan.plan_id}",
+                    reason_codes=("execution_completion_required",),
+                )
+            )
+        else:
+            measurements.append(
+                Measurement(
+                    measurement_id=(f"measurement:{context.stage.stage_id}:confidence"),
+                    metric_key="recommendation_confidence",
+                    value=confidence,
+                    value_type=MeasurementValueType.SCORE,
+                    source=source,
+                    observed_at=_now(),
+                    evidence_references=(f"decision:{context.stage.stage_id}",),
+                    confidence=confidence,
+                    verified=True,
+                    reason_codes=("runtime_decision_output",),
+                )
+            )
+            expected_outcomes.append(
+                ExpectedOutcome(
+                    expected_outcome_id=(
+                        f"expected:{context.stage.stage_id}:confidence"
+                    ),
+                    name="Recommendation confidence meets plan target",
+                    description=(
+                        "Compares declared plan target with observed recommendation "
+                        "confidence."
+                    ),
+                    metric_key="recommendation_confidence",
+                    expected_value=context.plan.confidence_target,
+                    comparison_operator=ComparisonOperator.GREATER_THAN_OR_EQUAL,
+                    tolerance=0.0,
+                    weight=1.0,
+                    required=True,
+                    source_reference=f"plan:{context.plan.plan_id}",
+                    reason_codes=("plan_confidence_target",),
+                )
+            )
         return self._engine.observe(
             ObservationRequest(
                 observation_request_id=context.stage.stage_id,
@@ -364,13 +500,17 @@ class ObservationExecutor(RuntimeEngineExecutor):
                 session_id=context.session.session.id,
                 plan_id=context.plan.plan_id,
                 correlation_id=context.correlation_id,
-                source_type=ObservationSourceType.DECISION_OUTCOME,
-                source_id=f"stage:{context.stage.stage_id}",
+                execution_id=None if execution is None else execution.execution_id,
+                source_event_id=None
+                if execution is None
+                else execution.terminal_event_id,
+                source_type=source_type,
+                source_id=source_id,
                 execution_result=execution_result,
                 decision_package=decision_package,
                 recommendation=recommendation,
-                expected_outcomes=(expected,),
-                observed_measurements=(measurement,),
+                expected_outcomes=tuple(expected_outcomes),
+                observed_measurements=tuple(measurements),
                 observation_window=ObservationWindow(
                     started_at=context.session.state.updated_at,
                     ended_at=_now(),
@@ -558,6 +698,7 @@ class ExecutionExecutor(RuntimeEngineExecutor):
         )
         request = ExecutionRequest(
             execution_request_id=context.stage.stage_id,
+            execution_id=_metadata_uuid(context.safe_metadata, "runtime_execution_id"),
             organization_id=context.session.session.organization_id,
             session_id=context.session.session.id,
             plan_id=context.plan.plan_id,

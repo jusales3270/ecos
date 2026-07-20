@@ -19,10 +19,13 @@ from ecos.events import EventService
 from ecos.execution import (
     ConnectorRegistry,
     ExecutionEngine,
+    ExecutionResultRepository,
+    InMemoryExecutionResultRepository,
     InMemoryHumanTaskProvider,
     InMemoryIdempotencyProvider,
     default_in_memory_connector,
 )
+from ecos.execution.postgres_repository import PostgresExecutionResultRepository
 from ecos.governance import (
     DefaultApprovalPolicyProvider,
     GovernanceConfig,
@@ -183,7 +186,10 @@ class Container:
         else:
             self.session_repository = FakeSessionRepository()
         self.runtime_checkpoint_repository: RuntimeCheckpointRepository
-        if self.settings.runtime_checkpoint_repository == "postgres":
+        if (
+            self.settings.runtime_checkpoint_repository == "postgres"
+            or self.settings.session_repository == "postgres"
+        ):
             self.runtime_checkpoint_repository = PostgresRuntimeCheckpointRepository(
                 self.settings.database_url,
                 lease_duration=self.settings.runtime_start_claim_lease,
@@ -443,6 +449,13 @@ class Container:
         self.connector_registry.register(default_in_memory_connector())
         self.idempotency_provider = InMemoryIdempotencyProvider()
         self.human_task_provider = InMemoryHumanTaskProvider()
+        self.execution_result_repository: ExecutionResultRepository
+        if self.settings.runtime_checkpoint_repository == "postgres":
+            self.execution_result_repository = PostgresExecutionResultRepository(
+                self.settings.database_url
+            )
+        else:
+            self.execution_result_repository = InMemoryExecutionResultRepository()
         self.execution_engine = ExecutionEngine(
             connector_registry=self.connector_registry,
             idempotency_provider=self.idempotency_provider,
@@ -453,6 +466,7 @@ class Container:
             sleeper=asyncio.sleep,
             concurrency_limit=1,
             default_timeout_seconds=30.0,
+            result_repository=self.execution_result_repository,
         )
         self.engine_executors = {
             "context": ContextExecutor(self.context_service),

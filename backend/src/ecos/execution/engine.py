@@ -54,6 +54,11 @@ from ecos.execution.provider import (
     deterministic_fingerprint,
 )
 from ecos.execution.registry import ConnectorRegistry
+from ecos.execution.repository import (
+    ExecutionResultConflictError,
+    ExecutionResultRepository,
+    InMemoryExecutionResultRepository,
+)
 
 Clock = Callable[[], datetime]
 IdGenerator = Callable[[], UUID]
@@ -77,6 +82,7 @@ class ExecutionEngine:
         concurrency_limit: int = 1,
         default_timeout_seconds: float = 30.0,
         failure_classifier: FailureClassifier | None = None,
+        result_repository: ExecutionResultRepository | None = None,
     ) -> None:
         if concurrency_limit < 1:
             raise ValueError("concurrency_limit must be at least one")
@@ -92,6 +98,7 @@ class ExecutionEngine:
         self._concurrency_limit = concurrency_limit
         self._default_timeout_seconds = default_timeout_seconds
         self._failure_classifier = failure_classifier or self._classify_failure
+        self._results = result_repository or InMemoryExecutionResultRepository()
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         """Execute synchronously for current runtime callers."""
@@ -100,6 +107,10 @@ class ExecutionEngine:
     async def execute_async(self, request: ExecutionRequest) -> ExecutionResult:
         """Execute an approved ExecutionRequest."""
         execution_id = request.execution_id or self._id_generator()
+        canonical = self._results.get(request.organization_id, execution_id)
+        if canonical is not None:
+            self._validate_canonical_result(request, canonical)
+            return canonical
         started_at = self._now()
         state = _ExecutionRuntimeState(
             execution_id=execution_id,
@@ -144,8 +155,14 @@ class ExecutionEngine:
             failure = self._failure(state, error)
             state.failures.append(failure)
             self._timeline(state, TimelineEntryType.FAILURE, "failed")
-            self._publish(state, EventType.EXECUTION_FAILED)
-            return self._build_result(state, ExecutionStatus.FAILED, self._now())
+            result = self._build_result(state, ExecutionStatus.FAILED, self._now())
+            canonical = self._results.save(result)
+            self._publish(
+                state,
+                EventType.EXECUTION_FAILED,
+                result=canonical,
+            )
+            return canonical
 
     async def resume_async(self, request: ExecutionRequest) -> ExecutionResult:
         """Resume from a returned ExecutionResumeState."""
@@ -161,6 +178,10 @@ class ExecutionEngine:
         if state_value.plan_id != request.plan_id:
             raise InvalidExecutionRequestError("resume plan mismatch")
         execution_id = state_value.execution_id
+        canonical = self._results.get(request.organization_id, execution_id)
+        if canonical is not None:
+            self._validate_canonical_result(request, canonical)
+            return canonical
         state = _ExecutionRuntimeState(
             execution_id=execution_id,
             request=request,
@@ -219,8 +240,14 @@ class ExecutionEngine:
                         paused.add(step.step_id)
         self._validate_success(state, steps)
         self._timeline(state, TimelineEntryType.EXECUTION, "completed")
-        self._publish(state, EventType.EXECUTION_COMPLETED)
-        return self._build_result(state, ExecutionStatus.COMPLETED, self._now())
+        result = self._build_result(state, ExecutionStatus.COMPLETED, self._now())
+        canonical = self._results.save(result)
+        self._publish(
+            state,
+            EventType.EXECUTION_COMPLETED,
+            result=canonical,
+        )
+        return canonical
 
     async def _execute_step(
         self,
@@ -910,7 +937,7 @@ class ExecutionEngine:
                 created_at=state.started_at,
                 updated_at=completed_at,
             )
-        return ExecutionResult(
+        provisional = ExecutionResult(
             execution_id=state.execution_id,
             execution_request_id=request.execution_request_id,
             execution_plan_id=request.execution_plan.execution_plan_id,
@@ -919,6 +946,19 @@ class ExecutionEngine:
             plan_id=request.plan_id,
             correlation_id=request.correlation_id,
             status=status,
+            fingerprint="0" * 64,
+            terminal_event_id=(
+                self._id_generator()
+                if status
+                in {
+                    ExecutionStatus.COMPLETED,
+                    ExecutionStatus.FAILED,
+                    ExecutionStatus.CANCELLED,
+                    ExecutionStatus.ROLLED_BACK,
+                    ExecutionStatus.ROLLBACK_FAILED,
+                }
+                else None
+            ),
             mode=self._mode(request),
             started_at=state.started_at,
             completed_at=completed_at,
@@ -944,6 +984,36 @@ class ExecutionEngine:
             reason_codes=request.execution_plan.reason_codes,
             safe_metadata=request.safe_metadata,
         )
+        fingerprint = deterministic_fingerprint(
+            provisional.model_dump(mode="json", exclude={"fingerprint"})
+        )
+        return provisional.model_copy(update={"fingerprint": fingerprint})
+
+    @staticmethod
+    def _validate_canonical_result(
+        request: ExecutionRequest,
+        result: ExecutionResult,
+    ) -> None:
+        expected_scope = (
+            request.organization_id,
+            request.session_id,
+            request.plan_id,
+            request.correlation_id,
+        )
+        actual_scope = (
+            result.organization_id,
+            result.session_id,
+            result.plan_id,
+            result.correlation_id,
+        )
+        if actual_scope != expected_scope:
+            raise ExecutionResultConflictError(
+                "persisted execution result scope does not match runtime request"
+            )
+        if result.execution_plan_id != request.execution_plan.execution_plan_id:
+            raise ExecutionResultConflictError(
+                "persisted execution result plan does not match runtime request"
+            )
 
     def _metrics(
         self,
@@ -1080,19 +1150,45 @@ class ExecutionEngine:
         state: "_ExecutionRuntimeState",
         event_type: EventType,
         step: ExecutionStep | None = None,
+        *,
+        result: ExecutionResult | None = None,
     ) -> None:
+        terminal = event_type in {
+            EventType.EXECUTION_COMPLETED,
+            EventType.EXECUTION_FAILED,
+        }
+        if terminal and result is None:
+            raise ValueError("terminal execution events require a persisted result")
+        payload = {
+            "organization_id": str(state.request.organization_id),
+            "session_id": str(state.request.session_id),
+            "plan_id": str(state.request.plan_id),
+            "execution_id": str(state.execution_id),
+            "correlation_id": str(state.request.correlation_id),
+            "step_id": None if step is None else str(step.step_id),
+            "status": event_type.value,
+        }
+        if result is not None:
+            payload.update(
+                {
+                    "status": result.status.value,
+                    "fingerprint": result.fingerprint,
+                    "result_reference": (
+                        f"execution_results:{result.organization_id}:"
+                        f"{result.execution_id}"
+                    ),
+                }
+            )
         self._event_service.publish(
             Event(
+                id=result.terminal_event_id
+                if result is not None and result.terminal_event_id is not None
+                else self._id_generator(),
                 event_type=event_type,
                 source="execution",
+                organization_id=state.request.organization_id,
                 session_id=state.request.session_id,
-                payload={
-                    "organization_id": str(state.request.organization_id),
-                    "plan_id": str(state.request.plan_id),
-                    "execution_id": str(state.execution_id),
-                    "step_id": None if step is None else str(step.step_id),
-                    "status": event_type.value,
-                },
+                payload=payload,
                 metadata=EventMetadata(correlation_id=state.request.correlation_id),
                 priority=EventPriority.NORMAL,
             )

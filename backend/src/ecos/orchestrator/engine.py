@@ -231,18 +231,35 @@ class Orchestrator:
                         )
             completed_at = self._now()
         self._validate_success(state, stages)
-        self._timeline(state, TimelineEntryType.COMPLETION, "completed")
-        self._publish(state.orchestration_input, EventType.PIPELINE_COMPLETED)
+        pipeline_status = self._post_execution_status(state)
+        terminal_status = pipeline_status.value
+        self._timeline(state, TimelineEntryType.COMPLETION, terminal_status)
+        terminal_event = {
+            PipelineExecutionStatus.COMPLETED: EventType.PIPELINE_COMPLETED,
+            PipelineExecutionStatus.FAILED: EventType.PIPELINE_FAILED,
+            PipelineExecutionStatus.CANCELLED: EventType.PIPELINE_CANCELLED,
+        }[pipeline_status]
+        self._publish(state.orchestration_input, terminal_event)
+        session_status = {
+            PipelineExecutionStatus.COMPLETED: SessionLifecycleStatus.COMPLETED,
+            PipelineExecutionStatus.FAILED: SessionLifecycleStatus.FAILED,
+            PipelineExecutionStatus.CANCELLED: SessionLifecycleStatus.CANCELLED,
+        }[pipeline_status]
         self._sync_session(
             state.orchestration_input.active_session,
-            SessionLifecycleStatus.COMPLETED,
+            session_status,
             self._session_stage(stages[-1].engine),
             None,
             1.0,
+            last_error=(
+                "operational execution did not succeed"
+                if pipeline_status is PipelineExecutionStatus.FAILED
+                else None
+            ),
         )
         return self._build_result(
             state,
-            PipelineExecutionStatus.COMPLETED,
+            pipeline_status,
             completed_at or self._now(),
         )
 
@@ -759,10 +776,47 @@ class Orchestrator:
         if stage.required and result.output is None:
             raise RequiredOutputMissingError("required stage output is missing")
         if stage.engine == "execution":
-            output_status = getattr(result.output, "status", None)
+            output_status = (
+                result.output.get("status")
+                if isinstance(result.output, dict)
+                else getattr(result.output, "status", None)
+            )
             output_status_value = getattr(output_status, "value", output_status)
-            if output_status_value is not None and output_status_value != "completed":
-                raise InvalidResultError("execution engine did not complete")
+            if output_status_value not in {
+                None,
+                "completed",
+                "failed",
+                "cancelled",
+                "rolled_back",
+                "rollback_failed",
+            }:
+                raise InvalidResultError("execution engine returned an invalid result")
+
+    @staticmethod
+    def _post_execution_status(state: "_RuntimeState") -> PipelineExecutionStatus:
+        execution_results = tuple(
+            item.output
+            for item in state.stage_results.values()
+            if item.engine == "execution" and item.output is not None
+        )
+        if not execution_results:
+            return PipelineExecutionStatus.COMPLETED
+        result = execution_results[-1]
+        status = getattr(result, "status", None)
+        if isinstance(result, dict):
+            status = result.get("status")
+        status_value = str(getattr(status, "value", status)).lower()
+        if status is None:
+            status_value = "completed"
+        if status_value == "cancelled":
+            return PipelineExecutionStatus.CANCELLED
+        if (
+            status_value != "completed"
+            or bool(getattr(result, "failures", ()))
+            or bool(getattr(result, "rollback_results", ()))
+        ):
+            return PipelineExecutionStatus.FAILED
+        return PipelineExecutionStatus.COMPLETED
 
     def _validate_success(
         self,
@@ -996,7 +1050,10 @@ class Orchestrator:
             correlation_id=state.orchestration_input.correlation_id,
             attempt=attempt,
             deadline_remaining_seconds=timeout,
-            safe_metadata=state.orchestration_input.safe_metadata,
+            safe_metadata={
+                **state.orchestration_input.safe_metadata,
+                "runtime_execution_id": str(state.execution_id),
+            },
         )
 
     def _sync_session(

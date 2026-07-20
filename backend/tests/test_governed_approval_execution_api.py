@@ -8,8 +8,12 @@ from uuid import UUID, uuid4, uuid5
 import pytest
 from fastapi.testclient import TestClient
 
+from ecos.events import EventType
+from ecos.execution import ExecutionResult
 from ecos.governance import ApprovalRequestStatus, GovernanceResult
+from ecos.learning import LearningResult
 from ecos.main import app
+from ecos.observation import ObservationResult
 from ecos.operational.service import DEMO_ORG_A
 from ecos.runtime import RuntimeCheckpointStatus
 from ecos.security import Role
@@ -139,6 +143,30 @@ def test_runtime_quorum_persists_partial_and_executes_exactly_once(
         assert governance.approval_request is not None
         assert governance.approval_request.status is ApprovalRequestStatus.GRANTED
         assert len(governance.approval_request.current_approvals) == minimum
+        artifacts = {
+            item.engine: container.runtime_artifact_codec.decode(item.output)
+            for item in checkpoint.stage_results
+        }
+        execution = artifacts["execution"]
+        observation = artifacts["observation"]
+        learning = artifacts["learning"]
+        assert isinstance(execution, ExecutionResult)
+        assert isinstance(observation, ObservationResult)
+        assert isinstance(learning, LearningResult)
+        assert observation.execution_id == execution.execution_id
+        assert learning.execution_id == execution.execution_id
+        assert learning.observation_id == observation.observation_id
+        assert execution.correlation_id == checkpoint.correlation_id
+        assert observation.correlation_id == checkpoint.correlation_id
+        assert learning.correlation_id == checkpoint.correlation_id
+        terminal_event = next(
+            envelope.event
+            for envelope in container.event_bus.envelopes
+            if envelope.event.event_type is EventType.EXECUTION_COMPLETED
+            and envelope.event.payload.get("execution_id")
+            == str(execution.execution_id)
+        )
+        assert terminal_event.metadata.correlation_id == checkpoint.correlation_id
 
 
 def test_runtime_approval_idempotency_and_actor_are_enforced() -> None:

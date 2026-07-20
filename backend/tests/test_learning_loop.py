@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from ecos.events import EventService, EventType
+from ecos.execution import ExecutionMode, ExecutionResult, ExecutionStatus
 from ecos.learning import (
     InMemoryLearningHistoryProvider,
     LearningConfig,
@@ -121,6 +122,75 @@ def test_single_learning_occurrence_is_not_a_pattern() -> None:
     result = service.process(request(observation()))
 
     assert result.pattern_signals == ()
+
+
+def test_failed_execution_generates_only_negative_learning() -> None:
+    """Failure knowledge may be stored, but success claims are blocked."""
+    repository = FakeMemoryRepository()
+    service = LearningService(
+        MemoryService(repository),
+        EventService(FakeEventBus()),
+        clock=lambda: NOW,
+        id_generator=uuid4,
+    )
+    observed = observation().model_copy(
+        update={
+            "status": ObservedOutcomeStatus.FAILED,
+            "outcome_score": 0.0,
+            "observed_outcomes": (
+                ObservedOutcome(
+                    outcome_id="outcome:failed",
+                    status=ObservedOutcomeStatus.FAILED,
+                    score=0.0,
+                    confidence=0.91,
+                    evidence_references=("execution_failure:evidence",),
+                ),
+            ),
+        }
+    )
+    execution_id = uuid4()
+    execution = ExecutionResult(
+        execution_id=execution_id,
+        execution_request_id=uuid4(),
+        execution_plan_id=uuid4(),
+        organization_id=observed.organization_id,
+        session_id=observed.session_id,
+        plan_id=observed.plan_id,
+        correlation_id=observed.correlation_id,
+        status=ExecutionStatus.FAILED,
+        fingerprint="f" * 64,
+        mode=ExecutionMode.DRY_RUN,
+        started_at=NOW,
+        completed_at=NOW,
+        duration=0.0,
+        idempotency_key="failed-learning",
+        authorization_id=uuid4(),
+    )
+    observed = observed.model_copy(update={"execution_id": execution_id})
+    learning_request = LearningRequest(
+        learning_request_id=uuid4(),
+        organization_id=observed.organization_id,
+        session_id=observed.session_id,
+        plan_id=observed.plan_id,
+        correlation_id=observed.correlation_id,
+        execution_id=execution_id,
+        observation_id=observed.observation_id,
+        observation_result=observed,
+        execution_result=execution,
+    )
+
+    result = service.process(learning_request)
+
+    assert result.execution_id == execution_id
+    assert result.observation_id == observed.observation_id
+    assert all(
+        candidate.statement.get("type") != "expectation_reached"
+        for candidate in result.candidates
+    )
+    assert all(
+        memory.description.find("expectation_reached") == -1
+        for memory in repository.list()
+    )
 
 
 def test_pattern_requires_recurrence() -> None:

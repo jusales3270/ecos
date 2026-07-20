@@ -216,6 +216,8 @@ class LearningRequest(LearningModel):
     session_id: UUID
     plan_id: UUID
     correlation_id: UUID
+    execution_id: UUID | None = None
+    observation_id: UUID | None = None
     observation_result: ObservationResult
     decision_package: Any = None
     recommendation: Any = None
@@ -240,6 +242,12 @@ class LearningRequest(LearningModel):
         if self.plan_id != self.observation_result.plan_id:
             msg = "plan_id mismatch"
             raise ValueError(msg)
+        if self.observation_id not in {None, self.observation_result.observation_id}:
+            raise ValueError("observation_id mismatch")
+        if self.execution_id not in {None, self.observation_result.execution_id}:
+            raise ValueError("execution_id mismatch")
+        if self.correlation_id != self.observation_result.correlation_id:
+            raise ValueError("correlation_id mismatch")
         return self
 
     @field_validator("safe_metadata")
@@ -284,6 +292,8 @@ class LearningResult(LearningModel):
     session_id: UUID
     plan_id: UUID
     correlation_id: UUID
+    execution_id: UUID | None = None
+    observation_id: UUID
     status: LearningStatus
     candidates: tuple[LearningCandidate, ...]
     validated_candidates: tuple[LearningCandidate, ...]

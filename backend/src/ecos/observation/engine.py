@@ -166,6 +166,8 @@ class ObservationEngine:
             request.expected_outcomes, comparisons, quality
         )
         status = self._status(request, comparisons, outcome_score)
+        if self._execution_failed(request):
+            outcome_score = 0.0
         confidence = self._confidence(measurements, quality)
         if status in {
             ObservedOutcomeStatus.INCONCLUSIVE,
@@ -197,6 +199,8 @@ class ObservationEngine:
             session_id=request.session_id,
             plan_id=request.plan_id,
             correlation_id=request.correlation_id,
+            execution_id=request.execution_id,
+            source_event_id=request.source_event_id,
             source_type=request.source_type,
             source_id=request.source_id,
             status=status,
@@ -259,6 +263,12 @@ class ObservationEngine:
                 if actual != expected:
                     msg = f"execution_result {attr} mismatch"
                     raise ObservationValidationError(msg)
+            if request.execution_id != getattr(
+                request.execution_result, "execution_id", None
+            ):
+                raise ObservationValidationError(
+                    "execution_result execution_id mismatch"
+                )
         for outcome in request.expected_outcomes:
             if self._has_sensitive_metadata(outcome.safe_metadata):
                 msg = "expected outcome metadata contains sensitive keys"
@@ -655,11 +665,13 @@ class ObservationEngine:
         comparisons: tuple[OutcomeComparison, ...],
         outcome_score: float,
     ) -> ObservedOutcomeStatus:
-        status_value = str(getattr(request.execution_result, "status", "")).lower()
-        if "rolled_back" in status_value:
+        status_value = self._execution_status(request)
+        if "rolled_back" in status_value or "rollback" in status_value:
             return ObservedOutcomeStatus.ROLLED_BACK
         if "cancelled" in status_value or "canceled" in status_value:
             return ObservedOutcomeStatus.CANCELLED
+        if self._execution_failed(request):
+            return ObservedOutcomeStatus.FAILED
         if not comparisons:
             return ObservedOutcomeStatus.NOT_OBSERVED
         required = [item for item in request.expected_outcomes if item.required]
@@ -757,6 +769,9 @@ class ObservationEngine:
             "organization_id": str(request.organization_id),
             "session_id": str(request.session_id),
             "plan_id": str(request.plan_id),
+            "execution_id": None
+            if request.execution_id is None
+            else str(request.execution_id),
             "source_type": request.source_type.value,
             "source_id": request.source_id,
             "window": window,
@@ -773,9 +788,39 @@ class ObservationEngine:
                 "simulation_results",
             },
         )
+        execution_result = request.execution_result
+        data["execution_id"] = (
+            None if request.execution_id is None else str(request.execution_id)
+        )
+        data["execution_result_fingerprint"] = getattr(
+            execution_result, "fingerprint", None
+        )
         return hashlib.sha256(
             json.dumps(data, sort_keys=True, default=str).encode()
         ).hexdigest()
+
+    @staticmethod
+    def _execution_status(request: ObservationRequest) -> str:
+        status = getattr(request.execution_result, "status", "")
+        return str(getattr(status, "value", status)).lower()
+
+    def _execution_failed(self, request: ObservationRequest) -> bool:
+        result = request.execution_result
+        if result is None:
+            return False
+        status = self._execution_status(request)
+        if status in {
+            "failed",
+            "cancelled",
+            "canceled",
+            "rolling_back",
+            "rolled_back",
+            "rollback_failed",
+        }:
+            return True
+        failures = tuple(getattr(result, "failures", ()) or ())
+        rollback_results = tuple(getattr(result, "rollback_results", ()) or ())
+        return bool(failures or rollback_results)
 
     def _number(self, value: object) -> float | None:
         if isinstance(value, bool) or not isinstance(value, int | float):

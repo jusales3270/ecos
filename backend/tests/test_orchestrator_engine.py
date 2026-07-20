@@ -5,9 +5,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
+
 from ecos.domain import CognitiveSession, Objective, SessionStage
 from ecos.domain.enums import SessionStatus
 from ecos.events import EventService, EventType
+from ecos.execution import ExecutionMode as OperationalExecutionMode
+from ecos.execution import ExecutionResult as OperationalExecutionResult
+from ecos.execution import ExecutionStatus as OperationalExecutionStatus
 from ecos.orchestrator import (
     ApprovalState,
     ApprovalStatus,
@@ -424,3 +429,75 @@ def test_orchestrator_module_has_no_forbidden_dependencies() -> None:
     assert "sqlalchemy" not in source.lower()
     assert "os.environ" not in source
     assert ("ev" + "al(") not in source
+
+
+@pytest.mark.parametrize(
+    ("execution_status", "pipeline_status", "session_status"),
+    [
+        (
+            OperationalExecutionStatus.FAILED,
+            PipelineExecutionStatus.FAILED,
+            SessionLifecycleStatus.FAILED,
+        ),
+        (
+            OperationalExecutionStatus.COMPLETED,
+            PipelineExecutionStatus.COMPLETED,
+            SessionLifecycleStatus.COMPLETED,
+        ),
+    ],
+)
+def test_post_cycle_runs_after_domain_execution_result(
+    execution_status: OperationalExecutionStatus,
+    pipeline_status: PipelineExecutionStatus,
+    session_status: SessionLifecycleStatus,
+) -> None:
+    session = make_session()
+    repository = FakeSessionRepository()
+    repository.create(session)
+    execution_stage = PipelineStep(order=1, engine="execution")
+    observation_stage = PipelineStep(
+        order=2,
+        engine="observation",
+        dependencies=(execution_stage.stage_id,),
+    )
+    learning_stage = PipelineStep(
+        order=3,
+        engine="learning",
+        dependencies=(observation_stage.stage_id,),
+    )
+    plan = make_plan(session, (execution_stage, observation_stage, learning_stage))
+    execution_result = OperationalExecutionResult(
+        execution_id=uuid4(),
+        execution_request_id=execution_stage.stage_id,
+        execution_plan_id=execution_stage.stage_id,
+        organization_id=session.session.organization_id,
+        session_id=session.session.id,
+        plan_id=plan.plan_id,
+        correlation_id=session.session.id,
+        status=execution_status,
+        fingerprint="a" * 64,
+        mode=OperationalExecutionMode.DRY_RUN,
+        started_at=NOW,
+        completed_at=NOW,
+        duration=0.0,
+        idempotency_key=f"orchestrator:{execution_stage.stage_id}",
+        authorization_id=uuid4(),
+    )
+    observation = RecordingExecutor("observation", {"observed": True})
+    learning = RecordingExecutor("learning", {"learned": True})
+    orchestrator, _ = make_orchestrator(
+        {
+            "execution": RecordingExecutor("execution", execution_result),
+            "observation": observation,
+            "learning": learning,
+        },
+        SessionService(repository),
+    )
+
+    result = orchestrator.execute(make_input(plan, session))
+
+    assert result.status is pipeline_status
+    assert len(observation.calls) == 1
+    assert len(learning.calls) == 1
+    assert observation.calls[0].accumulated_context["execution"] == execution_result
+    assert repository.get(session.session.id).state.lifecycle_status is session_status

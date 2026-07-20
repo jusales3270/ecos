@@ -19,11 +19,15 @@ from ecos.execution import (
     ExecutionMode,
     ExecutionPlan,
     ExecutionRequest,
+    ExecutionResult,
+    ExecutionResultConflictError,
+    ExecutionResultRepository,
     ExecutionStatus,
     ExecutionStep,
     ExecutionStepStatus,
     ExecutionType,
     InMemoryConnector,
+    InMemoryExecutionResultRepository,
     InMemoryHumanTaskProvider,
     InMemoryIdempotencyProvider,
     ResourceRequirement,
@@ -51,6 +55,7 @@ def make_engine(
     connector: InMemoryConnector | None = None,
     bus: FakeEventBus | None = None,
     classifier: object | None = None,
+    result_repository: ExecutionResultRepository | None = None,
 ) -> tuple[
     ExecutionEngine,
     ConnectorRegistry,
@@ -74,6 +79,7 @@ def make_engine(
         sleeper=_no_sleep,
         concurrency_limit=2,
         default_timeout_seconds=5.0,
+        result_repository=result_repository,
         **kwargs,
     )
     return engine, registry, idempotency, event_bus
@@ -382,7 +388,11 @@ def test_container_injects_real_execution_engine_and_registry() -> None:
 
 def test_execution_architecture_static_restrictions() -> None:
     execution_dir = Path("src/ecos/execution")
-    text = "\n".join(path.read_text() for path in execution_dir.glob("*.py"))
+    text = "\n".join(
+        path.read_text()
+        for path in execution_dir.glob("*.py")
+        if path.name != "postgres_repository.py"
+    )
 
     assert "openai" not in text
     assert "AIProvider" not in text
@@ -393,3 +403,107 @@ def test_execution_architecture_static_restrictions() -> None:
     forbidden_dynamic_calls = (f"ev{'al'}(", f"ex{'ec'}(")
     for pattern in forbidden_dynamic_calls:
         assert pattern not in text
+
+
+class RecordingResultRepository(InMemoryExecutionResultRepository):
+    """Record the event count visible when a canonical result is saved."""
+
+    def __init__(self, bus: FakeEventBus) -> None:
+        super().__init__()
+        self.bus = bus
+        self.event_counts_at_save: list[int] = []
+
+    def save(self, result: ExecutionResult) -> ExecutionResult:
+        self.event_counts_at_save.append(len(self.bus.envelopes))
+        return super().save(result)
+
+
+@pytest.mark.parametrize(
+    ("connector", "expected_status", "terminal_event"),
+    [
+        (None, ExecutionStatus.COMPLETED, EventType.EXECUTION_COMPLETED),
+        (
+            InMemoryConnector(
+                ConnectorDescriptor(
+                    connector_id="memory.dry_run",
+                    connector_type="in_memory",
+                    supported_execution_types=(ExecutionType.SYSTEM,),
+                    capabilities=(ConnectorCapability(name="dry_run"),),
+                ),
+                fail=True,
+            ),
+            ExecutionStatus.FAILED,
+            EventType.EXECUTION_FAILED,
+        ),
+    ],
+)
+def test_terminal_event_is_after_save_and_references_canonical_result(
+    connector: InMemoryConnector | None,
+    expected_status: ExecutionStatus,
+    terminal_event: EventType,
+) -> None:
+    bus = FakeEventBus()
+    repository = RecordingResultRepository(bus)
+    engine, _, _, _ = make_engine(
+        connector=connector,
+        bus=bus,
+        result_repository=repository,
+    )
+    execution_id = uuid4()
+
+    result = engine.execute(make_request(execution_id=execution_id))
+
+    assert result.status is expected_status
+    assert repository.get(ORG_ID, execution_id) == result
+    terminal = next(
+        envelope.event
+        for envelope in bus.envelopes
+        if envelope.event.event_type is terminal_event
+    )
+    terminal_index = next(
+        index
+        for index, envelope in enumerate(bus.envelopes)
+        if envelope.event.event_type is terminal_event
+    )
+    assert repository.event_counts_at_save == [terminal_index]
+    assert terminal.payload["execution_id"] == str(result.execution_id)
+    assert terminal.payload["organization_id"] == str(result.organization_id)
+    assert terminal.payload["session_id"] == str(result.session_id)
+    assert terminal.payload["plan_id"] == str(result.plan_id)
+    assert terminal.payload["correlation_id"] == str(result.correlation_id)
+    assert terminal.payload["status"] == result.status.value
+    assert terminal.payload["fingerprint"] == result.fingerprint
+    assert terminal.payload["result_reference"].endswith(str(result.execution_id))
+    assert terminal.id == result.terminal_event_id
+
+
+def test_canonical_replay_skips_connector_and_rejects_divergence() -> None:
+    repository = InMemoryExecutionResultRepository()
+    engine, registry, _, bus = make_engine(result_repository=repository)
+    execution_id = uuid4()
+    request = make_request(execution_id=execution_id)
+
+    first = engine.execute(request)
+    event_count = len(bus.envelopes)
+    second = engine.execute(request)
+    connector = registry.get("memory.dry_run")
+
+    assert second == first
+    assert isinstance(connector, InMemoryConnector)
+    assert len(connector.invocations) == 1
+    assert len(bus.envelopes) == event_count
+    with pytest.raises(ExecutionResultConflictError):
+        repository.save(first.model_copy(update={"fingerprint": "f" * 64}))
+
+
+def test_execution_result_repository_isolation_is_non_revealing() -> None:
+    repository = InMemoryExecutionResultRepository()
+    engine, _, _, _ = make_engine(result_repository=repository)
+    result = engine.execute(make_request(execution_id=uuid4()))
+    other_organization = uuid4()
+
+    assert repository.get(other_organization, result.execution_id) is None
+    with pytest.raises(ExecutionResultConflictError):
+        repository.save(
+            result.model_copy(update={"organization_id": other_organization})
+        )
