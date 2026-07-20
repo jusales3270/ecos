@@ -5,10 +5,21 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from ecos.domain import CognitiveSession, Objective, SessionStage
 from ecos.events import Event, EventMetadata, EventPriority, EventService, EventType
+from ecos.governance import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalRequestExpiredError,
+    ApprovalRequestStatus,
+    ConflictingDecisionReplayError,
+    GovernanceResult,
+    HumanDecision,
+    InvalidIdentityError,
+    UnauthorizedRoleError,
+)
 from ecos.knowledge import (
     KnowledgeEntity,
     KnowledgeEntityType,
@@ -44,6 +55,7 @@ from ecos.operational.repository import (
 )
 from ecos.runtime import (
     AuthenticatedRuntimeService,
+    ResumeSessionCommand,
     RuntimeAlreadyStartedError,
     RuntimeCheckpoint,
     RuntimeCheckpointConflictError,
@@ -603,7 +615,11 @@ class OperationalService:
             and checkpoint.status is RuntimeCheckpointStatus.FAILED
         ):
             state = "error"
-            error_code = "RUNTIME_FAILED"
+            error_code = (
+                "RUNTIME_REJECTED"
+                if managed.state.last_error == "RUNTIME_REJECTED"
+                else "RUNTIME_FAILED"
+            )
         elif checkpoint is not None:
             state = {
                 RuntimeCheckpointStatus.WAITING_APPROVAL: "waiting_approval",
@@ -831,6 +847,14 @@ class OperationalService:
             item.approval for item in self._sessions_for(principal) if item.approval
         ]
         values = [item for item in approvals if item is not None]
+        for session in self._repository.list_sessions(principal.organization_id):
+            checkpoint = self._runtime_checkpoint(principal, session.session_id)
+            if checkpoint is None:
+                continue
+            governance = self._checkpoint_governance(checkpoint)
+            if governance is None or governance.approval_request is None:
+                continue
+            values.append(self._runtime_approval_view(session, checkpoint, governance))
         if status:
             values = [item for item in values if item.status.value == status]
         return sorted(values, key=lambda item: item.created_at, reverse=True)
@@ -855,7 +879,19 @@ class OperationalService:
         )
         if cached is not None:
             return ApprovalView.model_validate(cached)
-        session, version = self._find_by_approval_with_version(principal, approval_id)
+        legacy = self._repository.find_by_approval(
+            principal.organization_id, approval_id
+        )
+        if legacy is None:
+            return self._decide_runtime_approval(
+                principal,
+                approval_id,
+                approve=approve,
+                reason=reason,
+                idempotency_key=idempotency_key,
+                operation=operation,
+            )
+        session, version = legacy
         approval = session.approval
         if approval is None:
             raise AuthorizationError("approval is not available")
@@ -921,6 +957,116 @@ class OperationalService:
             approval_id,
         )
         return decided
+
+    def _decide_runtime_approval(
+        self,
+        principal: AuthenticatedPrincipal,
+        approval_id: UUID,
+        *,
+        approve: bool,
+        reason: str | None,
+        idempotency_key: str | None,
+        operation: str,
+    ) -> ApprovalView:
+        """Record a server-authored decision and resume its governed checkpoint."""
+        if not idempotency_key or not idempotency_key.strip():
+            raise OperationalConflictError(
+                "Idempotency-Key is required for runtime approval decisions"
+            )
+        if not approve and not (reason and reason.strip()):
+            raise ValueError("rejection reason is required")
+        session, checkpoint, governance, request = self._find_runtime_approval(
+            principal, approval_id
+        )
+        actor_role = next(
+            (
+                role.value
+                for role in principal.roles
+                if role.value in request.required_roles
+            ),
+            None,
+        )
+        if actor_role is None:
+            raise AuthorizationError("actor role is not allowed for approval")
+        decision_id = uuid5(
+            approval_id,
+            f"{principal.user_id}:{idempotency_key.strip()}",
+        )
+        decision_value = HumanDecision.APPROVE if approve else HumanDecision.REJECT
+        existing_decision = next(
+            (
+                item
+                for item in (
+                    *request.current_approvals,
+                    *request.current_rejections,
+                )
+                if item.approval_decision_id == decision_id
+            ),
+            None,
+        )
+        if existing_decision is not None:
+            if (
+                existing_decision.actor_id != principal.user_id
+                or existing_decision.decision is not decision_value
+                or existing_decision.reason != reason
+            ):
+                raise OperationalConflictError(
+                    "idempotency key was already used with a different payload"
+                )
+            decision = existing_decision
+        else:
+            decision = ApprovalDecision(
+                approval_decision_id=decision_id,
+                approval_request_id=approval_id,
+                organization_id=principal.organization_id,
+                session_id=checkpoint.session_id,
+                plan_id=checkpoint.cognitive_plan.plan_id,
+                actor_id=principal.user_id,
+                actor_role=actor_role,
+                decision=decision_value,
+                reason=reason,
+                decided_at=_now(),
+                identity_reference=f"local:{principal.user_id}",
+                metadata={"source": "operational_api"},
+            )
+        command = ResumeSessionCommand(
+            session_id=checkpoint.session_id,
+            organization_id=checkpoint.organization_id,
+            user_id=principal.user_id,
+            correlation_id=checkpoint.correlation_id,
+            objective=session.objective,
+            approval_decision=decision,
+        )
+        try:
+            self._authenticated_runtime.resume_session(command)
+        except (UnauthorizedRoleError, InvalidIdentityError) as error:
+            raise AuthorizationError(str(error)) from None
+        except ApprovalRequestExpiredError as error:
+            raise OperationalConflictError(str(error)) from None
+        except (
+            ConflictingDecisionReplayError,
+            RuntimeCheckpointConflictError,
+        ) as error:
+            raise OperationalConflictError(str(error)) from None
+        except RuntimeCheckpointScopeError:
+            raise AuthorizationError("resource is not available") from None
+        latest = self._runtime_checkpoint(principal, checkpoint.session_id)
+        if latest is None:
+            raise OperationalRuntimeUnavailableError()
+        latest_governance = self._checkpoint_governance(latest)
+        if latest_governance is None or latest_governance.approval_request is None:
+            raise OperationalRuntimeUnavailableError()
+        view = self._runtime_approval_view(session, latest, latest_governance)
+        payload = {"approval_id": str(approval_id), "reason": reason}
+        self._store_idempotency(
+            principal,
+            operation,
+            idempotency_key,
+            payload,
+            view.model_dump(mode="json"),
+            approval_id,
+        )
+        return view
 
     def list_executions(self, principal: AuthenticatedPrincipal) -> list[ExecutionView]:
         """List execution records for the authenticated organization."""
@@ -1267,6 +1413,101 @@ class OperationalService:
         if result is not None:
             return result[0]
         raise AuthorizationError("resource is not available")
+
+    def _find_runtime_approval(
+        self,
+        principal: AuthenticatedPrincipal,
+        approval_id: UUID,
+    ) -> tuple[
+        OperationalSessionView,
+        RuntimeCheckpoint,
+        GovernanceResult,
+        ApprovalRequest,
+    ]:
+        """Find one runtime approval without revealing cross-organization records."""
+        for session in self._repository.list_sessions(principal.organization_id):
+            checkpoint = self._runtime_checkpoint(principal, session.session_id)
+            if checkpoint is None:
+                continue
+            governance = self._checkpoint_governance(checkpoint)
+            request = None if governance is None else governance.approval_request
+            if request is not None and request.approval_request_id == approval_id:
+                return session, checkpoint, governance, request
+        raise AuthorizationError("resource is not available")
+
+    def _checkpoint_governance(
+        self, checkpoint: RuntimeCheckpoint
+    ) -> GovernanceResult | None:
+        if checkpoint.governance_result is None:
+            return None
+        try:
+            return self._authenticated_runtime.governance_result(checkpoint)
+        except RuntimeCheckpointError:
+            return None
+
+    def _runtime_approval_view(
+        self,
+        session: OperationalSessionView,
+        checkpoint: RuntimeCheckpoint,
+        governance: GovernanceResult,
+    ) -> ApprovalView:
+        request = governance.approval_request
+        if request is None:
+            raise OperationalRuntimeUnavailableError()
+        decisions = (*request.current_approvals, *request.current_rejections)
+        latest = decisions[-1] if decisions else None
+        status = {
+            ApprovalRequestStatus.PENDING: ApprovalStatus.PENDING,
+            ApprovalRequestStatus.PARTIALLY_APPROVED: (
+                ApprovalStatus.PARTIALLY_APPROVED
+            ),
+            ApprovalRequestStatus.GRANTED: ApprovalStatus.APPROVED,
+            ApprovalRequestStatus.REJECTED: ApprovalStatus.REJECTED,
+            ApprovalRequestStatus.REVOKED: ApprovalStatus.REJECTED,
+            ApprovalRequestStatus.CANCELLED: ApprovalStatus.REJECTED,
+            ApprovalRequestStatus.EXPIRED: ApprovalStatus.REJECTED,
+        }[request.status]
+        runtime_status = {
+            RuntimeCheckpointStatus.WAITING_APPROVAL: "waiting_approval",
+            RuntimeCheckpointStatus.EXECUTING: "executing",
+            RuntimeCheckpointStatus.COMPLETED: "completed",
+            RuntimeCheckpointStatus.FAILED: "error",
+        }[checkpoint.status]
+        plan = tuple(step.engine for step in checkpoint.cognitive_plan.pipeline.steps)
+        return ApprovalView(
+            approval_id=request.approval_request_id,
+            organization_id=request.organization_id,
+            session_id=request.session_id,
+            recommendation_id=request.authorization_id,
+            requester_id=request.requester_id or checkpoint.user_id,
+            requester_email=self._user_email(
+                request.requester_id or checkpoint.user_id
+            ),
+            status=status,
+            risks=tuple(request.reason_codes),
+            plan=plan,
+            required_independent_approver=request.distinct_approvers_required,
+            decided_by=None if latest is None else latest.actor_id,
+            decided_by_email=None
+            if latest is None
+            else self._user_email(latest.actor_id),
+            decided_at=None if latest is None else latest.decided_at,
+            rejection_reason=None
+            if latest is None or latest.decision is not HumanDecision.REJECT
+            else latest.reason,
+            correlation_id=request.correlation_id,
+            created_at=request.requested_at,
+            action_scope=request.action_scope,
+            required_roles=request.required_roles,
+            minimum_approvals=request.minimum_approvals,
+            approvals_recorded=len(request.current_approvals),
+            expires_at=request.expires_at,
+            runtime_status=runtime_status,
+            checkpoint_version=checkpoint.version,
+            error_code="RUNTIME_REJECTED"
+            if request.status is ApprovalRequestStatus.REJECTED
+            else None,
+        )
 
     def _find_by_approval_with_version(
         self, principal: AuthenticatedPrincipal, approval_id: UUID
