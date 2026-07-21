@@ -90,7 +90,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.container = Container(settings=settings)
     if settings.outbox_process_on_startup:
         app.state.container.outbox_service.process_once()
-    yield
+    if settings.outbox_enabled:
+        app.state.container.outbox_service.start()
+    try:
+        yield
+    finally:
+        await app.state.container.outbox_service.stop()
 
 
 app = FastAPI(

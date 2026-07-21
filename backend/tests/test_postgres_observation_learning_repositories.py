@@ -44,6 +44,7 @@ from ecos.observation import (
     ObservationSourceType,
     PostgresObservationRepository,
 )
+from ecos.outbox import OutboxService, PostgresOutboxRepository
 from ecos.runtime import FakeEventBus, FakeMemoryRepository
 
 database_url = os.getenv("ECOS_TEST_DATABASE_URL")
@@ -208,7 +209,24 @@ def test_postgres_observation_round_trip_replay_conflict_and_isolation(
         replay_engine._id_generator = lambda: pytest.fail("engine reran on replay")
         assert replay_engine.observe(request) == first
         assert not replay_bus.envelopes
-        assert terminal_count == 1
+        assert terminal_count == 0
+        dispatcher_bus = FakeEventBus()
+        outbox_repository = PostgresOutboxRepository(url)
+        dispatcher = OutboxService(
+            outbox_repository,
+            EventService(dispatcher_bus),
+            max_attempts=3,
+            batch_size=10,
+        )
+        assert dispatcher.process_once()["delivered"] == 1
+        assert (
+            sum(
+                item.event.event_type is EventType.OBSERVATION_COMPLETED
+                for item in dispatcher_bus.envelopes
+            )
+            == 1
+        )
+        asyncio.run(outbox_repository.engine.dispose())
         with pytest.raises(ObservationIdempotencyConflictError):
             engine.observe(
                 request.model_copy(

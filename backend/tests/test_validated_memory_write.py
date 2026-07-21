@@ -42,6 +42,7 @@ from ecos.observation import (
     ObservedOutcomeStatus,
     PostgresObservationRepository,
 )
+from ecos.outbox import OutboxService, PostgresOutboxRepository
 from ecos.runtime import FakeEventBus, FakeMemoryRepository
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
@@ -411,10 +412,30 @@ def test_postgres_crash_replay_reuses_exact_memory_and_completes() -> None:
         assert (
             sum(
                 envelope.event.event_type is EventType.MEMORY_UPDATED
+                and envelope.event.organization_id == request.organization_id
+                and envelope.event.payload.get("memory_id") == str(first[0].id)
+                for envelope in bus.envelopes
+            )
+            == 0
+        )
+        outbox_repository = PostgresOutboxRepository(url)
+        dispatcher = OutboxService(
+            outbox_repository,
+            EventService(bus),
+            max_attempts=3,
+            batch_size=10,
+        )
+        assert dispatcher.process_once()["delivered"] >= 1
+        assert (
+            sum(
+                envelope.event.event_type is EventType.MEMORY_UPDATED
+                and envelope.event.organization_id == request.organization_id
+                and envelope.event.payload.get("memory_id") == str(first[0].id)
                 for envelope in bus.envelopes
             )
             == 1
         )
+        asyncio.run(outbox_repository.engine.dispose())
     finally:
         for memory in memory_repository.list(organization_id=request.organization_id):
             memory_repository.delete(memory.id)

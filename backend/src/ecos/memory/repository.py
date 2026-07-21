@@ -18,6 +18,8 @@ class ValidatedMemoryConflictError(RuntimeError):
 class MemoryRepository(ABC):
     """Abstract persistence interface for memory objects."""
 
+    supports_transactional_outbox: bool = False
+
     @abstractmethod
     def store(self, memory: MemoryObject) -> MemoryObject:
         """Store a memory object."""

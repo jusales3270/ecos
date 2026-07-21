@@ -49,6 +49,11 @@ class MemoryService:
         self._validated_authority.validate_memory_write(write)
         return self._repository.store_validated(write)
 
+    @property
+    def supports_transactional_outbox(self) -> bool:
+        """Report whether validated writes enqueue MEMORY_UPDATED atomically."""
+        return self._repository.supports_transactional_outbox
+
     def get(self, memory_id: UUID) -> MemoryObject | None:
         """Get a memory object through the repository abstraction."""
         return self._repository.get(memory_id)

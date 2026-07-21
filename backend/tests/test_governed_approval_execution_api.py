@@ -159,6 +159,7 @@ def test_runtime_quorum_persists_partial_and_executes_exactly_once(
         assert execution.correlation_id == checkpoint.correlation_id
         assert observation.correlation_id == checkpoint.correlation_id
         assert learning.correlation_id == checkpoint.correlation_id
+        container.outbox_service.process_once()
         terminal_event = next(
             envelope.event
             for envelope in container.event_bus.envelopes

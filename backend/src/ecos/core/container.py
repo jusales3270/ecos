@@ -261,6 +261,26 @@ class Container:
             ),
             redaction_policy=self.redaction_policy,
         )
+        use_postgres_outbox = any(
+            (
+                self.settings.operational_repository == "postgres",
+                self.settings.memory_repository == "postgres",
+                self.settings.runtime_checkpoint_repository == "postgres",
+                self.settings.session_repository == "postgres",
+            )
+        )
+        if use_postgres_outbox:
+            self.outbox_repository = PostgresOutboxRepository(
+                self.settings.database_url
+            )
+        else:
+            self.outbox_repository = InMemoryOutboxRepository()
+        self.outbox_service = OutboxService(
+            self.outbox_repository,
+            self.event_service,
+            max_attempts=self.settings.outbox_max_attempts,
+            batch_size=self.settings.outbox_batch_size,
+        )
         self.event_replay_service = EventReplayService(
             self.event_store,
             projectors=(
@@ -360,8 +380,13 @@ class Container:
                 self.settings.database_url
             )
         else:
-            self.observation_repository = InMemoryObservationRepository()
-            self.learning_repository = InMemoryLearningRepository()
+            local_outbox = (
+                self.outbox_repository
+                if isinstance(self.outbox_repository, InMemoryOutboxRepository)
+                else None
+            )
+            self.observation_repository = InMemoryObservationRepository(local_outbox)
+            self.learning_repository = InMemoryLearningRepository(outbox=local_outbox)
         self.learning_service = LearningService(
             self.memory_service,
             self.event_service,
@@ -487,7 +512,14 @@ class Container:
                 self.settings.database_url
             )
         else:
-            self.execution_result_repository = InMemoryExecutionResultRepository()
+            local_outbox = (
+                self.outbox_repository
+                if isinstance(self.outbox_repository, InMemoryOutboxRepository)
+                else None
+            )
+            self.execution_result_repository = InMemoryExecutionResultRepository(
+                local_outbox
+            )
         self.execution_engine = ExecutionEngine(
             connector_registry=self.connector_registry,
             idempotency_provider=self.idempotency_provider,
@@ -577,18 +609,6 @@ class Container:
             )
         else:
             self.security_controls = InMemorySecurityControlRepository()
-        if self.settings.operational_repository == "postgres":
-            self.outbox_repository = PostgresOutboxRepository(
-                self.settings.database_url
-            )
-        else:
-            self.outbox_repository = InMemoryOutboxRepository()
-        self.outbox_service = OutboxService(
-            self.outbox_repository,
-            self.event_service,
-            max_attempts=self.settings.outbox_max_attempts,
-            batch_size=self.settings.outbox_batch_size,
-        )
         self.operational_service = OperationalService(
             security_service=self.security_service,
             security_repository=self.security_repository,

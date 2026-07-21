@@ -156,12 +156,10 @@ class ExecutionEngine:
             state.failures.append(failure)
             self._timeline(state, TimelineEntryType.FAILURE, "failed")
             result = self._build_result(state, ExecutionStatus.FAILED, self._now())
-            canonical = self._results.save(result)
-            self._publish(
-                state,
-                EventType.EXECUTION_FAILED,
-                result=canonical,
-            )
+            event = self._terminal_event(state, EventType.EXECUTION_FAILED, result)
+            canonical = self._results.save_terminal(result, event)
+            if not self._results.supports_transactional_outbox:
+                self._event_service.publish(event)
             return canonical
 
     async def resume_async(self, request: ExecutionRequest) -> ExecutionResult:
@@ -241,12 +239,10 @@ class ExecutionEngine:
         self._validate_success(state, steps)
         self._timeline(state, TimelineEntryType.EXECUTION, "completed")
         result = self._build_result(state, ExecutionStatus.COMPLETED, self._now())
-        canonical = self._results.save(result)
-        self._publish(
-            state,
-            EventType.EXECUTION_COMPLETED,
-            result=canonical,
-        )
+        event = self._terminal_event(state, EventType.EXECUTION_COMPLETED, result)
+        canonical = self._results.save_terminal(result, event)
+        if not self._results.supports_transactional_outbox:
+            self._event_service.publish(event)
         return canonical
 
     async def _execute_step(
@@ -1180,7 +1176,9 @@ class ExecutionEngine:
                 }
             )
         self._event_service.publish(
-            Event(
+            self._terminal_event(state, event_type, result)
+            if result is not None
+            else Event(
                 id=result.terminal_event_id
                 if result is not None and result.terminal_event_id is not None
                 else self._id_generator(),
@@ -1192,6 +1190,35 @@ class ExecutionEngine:
                 metadata=EventMetadata(correlation_id=state.request.correlation_id),
                 priority=EventPriority.NORMAL,
             )
+        )
+
+    def _terminal_event(
+        self,
+        state: "_ExecutionRuntimeState",
+        event_type: EventType,
+        result: ExecutionResult,
+    ) -> Event:
+        return Event(
+            id=result.terminal_event_id or self._id_generator(),
+            event_type=event_type,
+            source="execution",
+            organization_id=state.request.organization_id,
+            session_id=state.request.session_id,
+            payload={
+                "organization_id": str(state.request.organization_id),
+                "session_id": str(state.request.session_id),
+                "plan_id": str(state.request.plan_id),
+                "execution_id": str(state.execution_id),
+                "correlation_id": str(state.request.correlation_id),
+                "step_id": None,
+                "status": result.status.value,
+                "fingerprint": result.fingerprint,
+                "result_reference": (
+                    f"execution_results:{result.organization_id}:{result.execution_id}"
+                ),
+            },
+            metadata=EventMetadata(correlation_id=state.request.correlation_id),
+            priority=EventPriority.NORMAL,
         )
 
     def _now(self) -> datetime:

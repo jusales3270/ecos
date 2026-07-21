@@ -26,9 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ecos.database import create_database_engine, create_session_factory
+from ecos.events import Event
 from ecos.memory import ValidatedMemoryWrite
+from ecos.outbox import append_outbox_event
 
-from .models import LearningResult, LearningValidation
+from .models import LearningResult, LearningStatus, LearningValidation
 from .repository import (
     LearningAcquisition,
     LearningClaim,
@@ -36,6 +38,7 @@ from .repository import (
     LearningConflictError,
     LearningRepository,
     _validate_write_against_result,
+    validate_learning_terminal_event,
 )
 
 
@@ -131,6 +134,8 @@ def _run[ResultT](coroutine: Coroutine[object, object, ResultT]) -> ResultT:
 
 
 class PostgresLearningRepository(LearningRepository):
+    supports_transactional_outbox = True
+
     def __init__(
         self,
         database_url: str | None = None,
@@ -163,7 +168,7 @@ class PostgresLearningRepository(LearningRepository):
                     LearningRunRecord.organization_id == organization_id,
                     LearningRunRecord.observation_id == observation_id,
                     LearningRunRecord.policy_version == policy_version,
-                    LearningRunRecord.status == "completed",
+                    LearningRunRecord.status.in_(("completed", "failed")),
                 )
             )
             return None if record is None else self._model(record)
@@ -224,7 +229,7 @@ class PostgresLearningRepository(LearningRepository):
                     "learning run disappeared during acquisition"
                 )
             self._validate_scope(record, values)
-            if record.status == "completed":
+            if record.status in {"completed", "failed"}:
                 return LearningAcquisition(result=self._model(record))
             if inserted is None:
                 if (
@@ -314,15 +319,33 @@ class PostgresLearningRepository(LearningRepository):
         validations: tuple[LearningValidation, ...],
     ) -> LearningResult:
         with self._sync_lock:
-            return _run(self._complete(claim, result, validations))
+            return _run(self._complete(claim, result, validations, event=None))
+
+    def complete_terminal(
+        self,
+        *,
+        claim: LearningClaim,
+        result: LearningResult,
+        validations: tuple[LearningValidation, ...],
+        event: Event,
+    ) -> LearningResult:
+        validate_learning_terminal_event(result, event)
+        if type(self).complete is not PostgresLearningRepository.complete:
+            return self.complete(claim=claim, result=result, validations=validations)
+        with self._sync_lock:
+            return _run(self._complete(claim, result, validations, event=event))
 
     async def _complete(
         self,
         claim: LearningClaim,
         result: LearningResult,
         validations: tuple[LearningValidation, ...],
+        *,
+        event: Event | None,
     ) -> LearningResult:
         now = self._clock()
+        if result.status not in {LearningStatus.COMPLETED, LearningStatus.FAILED}:
+            raise LearningConflictError("learning completion requires terminal status")
         async with self._session_factory() as database:
             changed = await database.scalar(
                 update(LearningRunRecord)
@@ -334,7 +357,7 @@ class PostgresLearningRepository(LearningRepository):
                     LearningRunRecord.status == "validated",
                 )
                 .values(
-                    status="completed",
+                    status=result.status.value,
                     payload=result.model_dump(mode="json"),
                     updated_at=now,
                     version=claim.version + 1,
@@ -346,6 +369,16 @@ class PostgresLearningRepository(LearningRepository):
             if changed is None:
                 raise LearningConflictError("stale or lost learning claim")
             await self._persist_children(database, result, validations, now)
+            if event is not None:
+                await append_outbox_event(
+                    database,
+                    event,
+                    aggregate_type="learning",
+                    aggregate_id=result.learning_id,
+                    execution_id=result.execution_id,
+                    observation_id=result.observation_id,
+                    learning_id=result.learning_id,
+                )
             await database.commit()
             return result.model_copy(deep=True)
 
