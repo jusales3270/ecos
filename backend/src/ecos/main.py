@@ -341,12 +341,6 @@ async def optional_authentication_middleware(
     return await call_next(request)
 
 
-@app.get("/")
-def root() -> dict[str, str]:
-    """Return the root application status."""
-    return {"name": settings.name, "version": settings.version, "status": "running"}
-
-
 @app.get("/health")
 def health(request: Request) -> dict[str, Any]:
     """Return backend, container, providers and runtime health status."""
