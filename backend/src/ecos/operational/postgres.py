@@ -7,6 +7,7 @@ from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime
+from threading import RLock
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -36,14 +37,17 @@ from ecos.operational.repository import (
 from ecos.outbox import OutboxRecord, message_from_event
 from ecos.session.orm import Base
 
+_RUN_LOCK = RLock()
+
 
 def _run[ResultT](coroutine: Coroutine[object, object, ResultT]) -> ResultT:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coroutine)
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(asyncio.run, coroutine).result()
+    with _RUN_LOCK:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coroutine)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, coroutine).result()
 
 
 class OperationalSessionRecord(Base):

@@ -1,13 +1,18 @@
 import type {
   Approval,
   AuthState,
+  CanonicalExecution,
+  CanonicalLearning,
+  CanonicalObservation,
+  CognitiveSession,
   EventRecord,
-  Execution,
   KnowledgeResult,
+  LearningReview,
   OperationalSession,
   OutboxMessage,
   Overview,
   ReadinessInfo,
+  ValidatedMemory,
   VersionInfo
 } from "./types";
 
@@ -96,10 +101,12 @@ export const api = {
       body: JSON.stringify({ objective, description })
     }),
   session: (id: string) => request<OperationalSession>(`/api/v1/sessions/${id}`),
+  cognitiveSession: (id: string) => request<CognitiveSession>(`/api/v1/sessions/${id}/cognitive`),
   startCognition: (id: string) =>
-    request<OperationalSession>(`/api/v1/sessions/${id}/start`, {
+    request<{ session_id: string }>("/api/v1/sara/interactions", {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey("session.start") }
+      headers: { "Idempotency-Key": idempotencyKey("sara.interaction") },
+      body: JSON.stringify({ message: "Iniciar ciclo cognitivo canônico", session_id: id, route_context: `/sessions/${id}`, history: [] })
     }),
   approvals: (status = "") =>
     request<Approval[]>(
@@ -117,12 +124,17 @@ export const api = {
       headers: { "Idempotency-Key": idempotencyKey("approval.reject") },
       body: JSON.stringify({ reason })
     }),
-  executions: () => request<Execution[]>("/api/v1/executions"),
-  startExecution: (id: string) =>
-    request<Execution>(`/api/v1/executions/${id}/start`, {
+  executions: () => request<CanonicalExecution[]>("/api/v1/executions"),
+  observations: () => request<CanonicalObservation[]>("/api/v1/observations"),
+  learning: () => request<CanonicalLearning[]>("/api/v1/learning"),
+  learningReviews: () => request<LearningReview[]>("/api/v1/learning/reviews"),
+  decideLearningReview: (candidateId: string, approve: boolean, justification: string) =>
+    request<{ review: LearningReview; learning: CanonicalLearning }>(`/api/v1/learning/reviews/${candidateId}/${approve ? "approve" : "reject"}`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey("execution.start") }
+      headers: { "Idempotency-Key": idempotencyKey("learning.review") },
+      body: JSON.stringify({ justification })
     }),
+  memories: () => request<ValidatedMemory[]>("/api/v1/memories"),
   knowledge: (query: string) =>
     request<KnowledgeResult[]>(
       `/api/v1/knowledge/search?q=${encodeURIComponent(query)}`

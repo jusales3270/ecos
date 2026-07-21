@@ -307,6 +307,8 @@ class MetricProjector:
             metric_type = (
                 MetricType.DURATION if "duration" in payload_key else MetricType.SCORE
             )
+            if payload_key in {"entity_count", "relationship_count"}:
+                metric_type = MetricType.GAUGE
             if payload_key == "cost_units":
                 metric_type = MetricType.COST_UNITS
             self._repository.append_metric(

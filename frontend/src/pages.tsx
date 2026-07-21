@@ -16,13 +16,18 @@ import {
 } from "./components";
 import type {
   Approval,
+  CanonicalExecution,
+  CanonicalLearning,
+  CanonicalObservation,
+  CognitiveSession,
   EventRecord,
-  Execution,
   KnowledgeResult,
+  LearningReview,
   OperationalSession,
   OutboxMessage,
   Overview,
-  ReadinessInfo
+  ReadinessInfo,
+  ValidatedMemory
 } from "./types";
 
 function useLoad<T>(loader: () => Promise<T>, deps: unknown[] = []) {
@@ -271,13 +276,16 @@ export function SessionDetailPage() {
     () => api.session(id),
     [id]
   );
+  const cognitive = useLoad<CognitiveSession>(() => api.cognitiveSession(id), [id]);
   const [actionError, setActionError] = useState<string | null>(null);
   const mayStart = can("sessions:write", auth?.principal.permissions);
 
   async function start() {
     setActionError(null);
     try {
-      setData(await api.startCognition(id));
+      await api.startCognition(id);
+      setData(await api.session(id));
+      cognitive.setData(await api.cognitiveSession(id));
     } catch (caught) {
       setActionError(caught instanceof Error ? caught.message : "Falha ao iniciar cognição");
     }
@@ -303,13 +311,12 @@ export function SessionDetailPage() {
             <SessionPipeline currentStage={data.status} stages={data.stages} />
           </Panel>
           <Panel title="Artefatos cognitivos associados">
-            {data.recommendation ? (
+            {cognitive.data && Object.keys(cognitive.data.artifacts).length > 0 ? (
               <div className="artifact-stack">
-                <Artifact title="Raciocínio" value={data.recommendation.reasoning} />
-                <Artifact title="Debate" value={data.recommendation.debate} />
-                <Artifact title="Simulação" value={data.recommendation.simulation} />
-                <Artifact title="Recomendação" value={data.recommendation.summary} />
-                <Artifact title="Decisão registrada" value={data.recommendation.decision} />
+                <Artifact title="Contexto" value={JSON.stringify(cognitive.data.artifacts.context ?? {}, null, 2)} />
+                <Artifact title="Reasoning" value={JSON.stringify(cognitive.data.artifacts.reasoning ?? {}, null, 2)} />
+                <Artifact title="Planning" value={JSON.stringify(cognitive.data.planning ?? {}, null, 2)} />
+                <Artifact title="Governance" value={JSON.stringify(cognitive.data.artifacts.governance ?? {}, null, 2)} />
               </div>
             ) : (
               <EmptyState>Nenhuma recomendação gerada.</EmptyState>
@@ -473,7 +480,8 @@ export function ApprovalsPage() {
             !mayApprove || !roleAllowed || deciding !== null || terminal || expired || alreadyDecided;
           const remaining = Math.max(item.minimum_approvals - item.approvals_recorded, 0);
           return (
-            <Panel key={item.approval_id} title={item.requester_email}>
+            <div key={item.approval_id} data-session-id={item.session_id}>
+            <Panel title={item.requester_email}>
               <Status value={item.status} />
               {item.runtime_status ? (
                 <p>Estado atual do runtime: <Status value={item.runtime_status} /></p>
@@ -526,6 +534,7 @@ export function ApprovalsPage() {
                 </button>
               </div>
             </Panel>
+            </div>
           );
         })}
       </div>
@@ -552,46 +561,41 @@ function approvalDecisionError(caught: unknown): string {
 }
 
 export function ExecutionsPage() {
-  const { auth } = useAuth();
-  const { data, loading, error, setData } = useLoad<Execution[]>(() => api.executions(), []);
-  const [message, setMessage] = useState<string | null>(null);
-  const mayExecute = can("execution:execute", auth?.principal.permissions);
-
-  async function start(id: string) {
-    setMessage(null);
-    try {
-      const updated = await api.startExecution(id);
-      setData((data ?? []).map((item) => (item.execution_id === id ? updated : item)));
-    } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Execução recusada");
-    }
-  }
+  const { data, loading, error } = useLoad<CanonicalExecution[]>(() => api.executions(), []);
   return (
     <Page title="Execuções">
       <AuthorityNotice />
-      {!mayExecute ? <AccessDeniedState /> : null}
-      {message ? <ErrorState>{message}</ErrorState> : null}
       {loading ? <LoadingState /> : null}
       {error ? <ErrorState>{error}</ErrorState> : null}
       {(data ?? []).length === 0 && !loading ? <EmptyState>Nenhuma execução disponível.</EmptyState> : null}
       {(data ?? []).map((item) => (
-        <Panel key={item.execution_id} title={item.connector_id}>
+        <div key={item.execution_id} data-session-id={item.session_id}>
+        <Panel title={`ExecutionResult ${item.execution_id.slice(0, 8)}`}>
           <div className="execution-head">
             <Status value={item.status} />
-            <span>{item.dry_run ? "dry-run" : "modo real"}</span>
-            <code>{item.correlation_id.slice(0, 8)}</code>
+            <span>{item.mode}</span>
+            <code>{item.fingerprint.slice(0, 12)}</code>
           </div>
-          <p>{item.result ?? item.error ?? "Aguardando aprovação explícita."}</p>
-          <EvidenceList title="Plano aprovado" items={item.approved_plan} />
-          <button disabled={!mayExecute || item.status !== "ready"} onClick={() => void start(item.execution_id)}>
-            Iniciar execução
-          </button>
-          <EvidenceList title="Observações" items={item.observations} />
-          <EvidenceList title="Aprendizado" items={item.learning} />
+          <p>Duração: {item.duration.toFixed(3)}s · etapas: {item.step_results.length}</p>
+          <pre>{JSON.stringify(item.outputs_by_connector, null, 2)}</pre>
+          {item.failures.length ? <pre>{JSON.stringify(item.failures, null, 2)}</pre> : null}
         </Panel>
+        </div>
       ))}
     </Page>
   );
+}
+
+export function ObservationsPage() {
+  const { data, loading, error } = useLoad<CanonicalObservation[]>(() => api.observations(), []);
+  return <Page title="Observações">
+    {loading ? <LoadingState /> : null}{error ? <ErrorState>{error}</ErrorState> : null}
+    {(data ?? []).length === 0 && !loading ? <EmptyState>Nenhum ObservationResult canônico.</EmptyState> : null}
+    {(data ?? []).map((item) => <div key={item.observation_id} data-session-id={item.session_id}><Panel title={`ObservationResult ${item.observation_id.slice(0, 8)}`}>
+      <Status value={item.status} /><p>Resultado {item.outcome_score.toFixed(2)} · confiança {item.confidence.toFixed(2)}</p>
+      <pre>{JSON.stringify({ outcomes: item.observed_outcomes, comparisons: item.comparisons, evidence: item.evidence, quality: item.quality }, null, 2)}</pre>
+    </Panel></div>)}
+  </Page>;
 }
 
 export function KnowledgePage() {
@@ -655,11 +659,17 @@ export function AuditPage() {
 }
 
 export function MemoryPage() {
+  const { data, loading, error } = useLoad<ValidatedMemory[]>(() => api.memories(), []);
   return (
     <Page title="Memória">
-      <Panel title="Memória organizacional">
-        <EmptyState>Não há endpoint de memória dedicado no frontend atual. Memórias relacionadas aparecem quando expostas por sessões e aprendizado.</EmptyState>
-      </Panel>
+      {loading ? <LoadingState /> : null}{error ? <ErrorState>{error}</ErrorState> : null}
+      {(data ?? []).length === 0 && !loading ? <EmptyState>Nenhuma memória validada.</EmptyState> : null}
+      {(data ?? []).map((item) => <div key={item.id} data-session-id={item.session_id}><Panel title={item.title}>
+        <Status value={item.validation_status} /><p>{item.description}</p>
+        <dl className="detail-list"><dt>Learning</dt><dd><code>{item.learning_id}</code></dd><dt>Candidato</dt><dd><code>{item.learning_candidate_id}</code></dd><dt>Proposta</dt><dd><code>{item.proposal_id}</code></dd><dt>Política</dt><dd>{item.policy_version}</dd><dt>Versão</dt><dd>{item.version}</dd></dl>
+        <EvidenceList title="Evidências" items={item.evidence_references ?? []} />
+        <EvidenceList title="Provenance" items={item.source_references ?? []} />
+      </Panel></div>)}
     </Page>
   );
 }
@@ -676,21 +686,41 @@ export function GovernancePage() {
 }
 
 export function LearningPage() {
-  const { data, loading, error } = useLoad<Execution[]>(() => api.executions(), []);
-  const learned = useMemo(
-    () => (data ?? []).filter((item) => item.learning.length > 0 || item.feedback.length > 0),
-    [data]
-  );
+  const { auth } = useAuth();
+  const { data, loading, error, setData } = useLoad<CanonicalLearning[]>(() => api.learning(), []);
+  const reviews = useLoad<LearningReview[]>(() => api.learningReviews(), []);
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [message, setMessage] = useState<string | null>(null);
+  const mayReview = can("decisions:approve", auth?.principal.permissions);
+  async function decide(candidateId: string, approve: boolean) {
+    const justification = reasons[candidateId]?.trim() ?? "";
+    if (!justification) { setMessage("Informe uma justificativa para a revisão."); return; }
+    try {
+      const updated = await api.decideLearningReview(candidateId, approve, justification);
+      setData((data ?? []).map((item) => item.learning_id === updated.learning.learning_id ? updated.learning : item));
+      reviews.setData(await api.learningReviews());
+      setMessage(null);
+    } catch (caught) { setMessage(caught instanceof Error ? caught.message : "Falha na revisão"); }
+  }
   return (
     <Page title="Aprendizado">
       {loading ? <LoadingState /> : null}
       {error ? <ErrorState>{error}</ErrorState> : null}
-      {learned.length === 0 && !loading ? <EmptyState>Nenhum aprendizado operacional registrado.</EmptyState> : null}
-      {learned.map((item) => (
-        <Panel key={item.execution_id} title={item.connector_id}>
-          <EvidenceList title="Feedback" items={item.feedback} />
-          <EvidenceList title="Aprendizado" items={item.learning} />
+      {message ? <ErrorState>{message}</ErrorState> : null}
+      {(data ?? []).length === 0 && !loading ? <EmptyState>Nenhum LearningResult canônico.</EmptyState> : null}
+      {(data ?? []).map((item) => (
+        <div key={item.learning_id} data-session-id={item.session_id}>
+        <Panel title={`LearningResult ${item.learning_id.slice(0, 8)}`}>
+          <Status value={item.status} /><pre>{JSON.stringify(item.validation_summary, null, 2)}</pre>
+          {item.candidates.map((candidate) => {
+            const review = (reviews.data ?? []).find((value) => value.learning_candidate_id === candidate.learning_candidate_id);
+            return <section className="artifact" key={candidate.learning_candidate_id}><h3>{candidate.category}</h3><Status value={review?.status ?? candidate.validation_status} /><pre>{JSON.stringify(candidate.statement, null, 2)}</pre>
+              {review?.status === "pending" ? <><textarea aria-label={`Justificativa ${candidate.learning_candidate_id}`} value={reasons[candidate.learning_candidate_id] ?? ""} onChange={(event) => setReasons((current) => ({...current, [candidate.learning_candidate_id]: event.target.value}))} /><div className="actions"><button disabled={!mayReview} onClick={() => void decide(candidate.learning_candidate_id, true)}>Aprovar candidato</button><button className="secondary" disabled={!mayReview} onClick={() => void decide(candidate.learning_candidate_id, false)}>Rejeitar candidato</button></div></> : null}
+              {review?.justification ? <p>Justificativa: {review.justification} · ator {review.actor_id} · versão {review.version}</p> : null}
+            </section>;
+          })}
         </Panel>
+        </div>
       ))}
     </Page>
   );

@@ -30,14 +30,22 @@ from ecos.events import Event
 from ecos.memory import ValidatedMemoryWrite
 from ecos.outbox import append_outbox_event
 
-from .models import LearningResult, LearningStatus, LearningValidation
+from .models import (
+    LearningCandidateReview,
+    LearningResult,
+    LearningReviewStatus,
+    LearningStatus,
+    LearningValidation,
+)
 from .repository import (
     LearningAcquisition,
     LearningClaim,
     LearningClaimUnavailableError,
     LearningConflictError,
     LearningRepository,
+    LearningReviewDecision,
     _validate_write_against_result,
+    apply_learning_review,
     validate_learning_terminal_event,
 )
 
@@ -124,6 +132,42 @@ class LearningValidationRecord(Base):
     )
 
 
+class LearningCandidateReviewRecord(Base):
+    __tablename__ = "learning_candidate_reviews"
+    review_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    learning_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("learning_runs.learning_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    candidate_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("learning_candidates.candidate_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    justification: Mapped[str | None] = mapped_column(String(1000))
+    actor_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 def _run[ResultT](coroutine: Coroutine[object, object, ResultT]) -> ResultT:
     try:
         asyncio.get_running_loop()
@@ -172,6 +216,184 @@ class PostgresLearningRepository(LearningRepository):
                 )
             )
             return None if record is None else self._model(record)
+
+    def list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[LearningResult]:
+        with self._sync_lock:
+            return _run(self._list_by_session(organization_id, session_id))
+
+    async def _list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[LearningResult]:
+        async with self._session_factory() as database:
+            records = (
+                await database.scalars(
+                    select(LearningRunRecord)
+                    .where(
+                        LearningRunRecord.organization_id == organization_id,
+                        LearningRunRecord.session_id == session_id,
+                        LearningRunRecord.payload.is_not(None),
+                    )
+                    .order_by(LearningRunRecord.created_at)
+                )
+            ).all()
+        return [self._model(record) for record in records]
+
+    def list_reviews(
+        self,
+        organization_id: UUID,
+        *,
+        session_id: UUID | None = None,
+        status: LearningReviewStatus | None = None,
+    ) -> list[LearningCandidateReview]:
+        with self._sync_lock:
+            return _run(
+                self._list_reviews(
+                    organization_id, session_id=session_id, status=status
+                )
+            )
+
+    async def _list_reviews(
+        self,
+        organization_id: UUID,
+        *,
+        session_id: UUID | None,
+        status: LearningReviewStatus | None,
+    ) -> list[LearningCandidateReview]:
+        statement = select(LearningCandidateReviewRecord).where(
+            LearningCandidateReviewRecord.organization_id == organization_id
+        )
+        if session_id is not None:
+            statement = statement.where(
+                LearningCandidateReviewRecord.session_id == session_id
+            )
+        if status is not None:
+            statement = statement.where(
+                LearningCandidateReviewRecord.status == status.value
+            )
+        statement = statement.order_by(LearningCandidateReviewRecord.created_at)
+        async with self._session_factory() as database:
+            records = (await database.scalars(statement)).all()
+        return [self._review_model(record) for record in records]
+
+    def decide_review(self, **kwargs: Any) -> LearningReviewDecision:
+        with self._sync_lock:
+            return _run(self._decide_review(**kwargs))
+
+    async def _decide_review(self, **values: Any) -> LearningReviewDecision:
+        status = values["status"]
+        if status not in {LearningReviewStatus.APPROVED, LearningReviewStatus.REJECTED}:
+            raise LearningConflictError("human review decision must be terminal")
+        now = self._clock()
+        async with self._session_factory() as database:
+            review = await database.scalar(
+                select(LearningCandidateReviewRecord)
+                .where(
+                    LearningCandidateReviewRecord.organization_id
+                    == values["organization_id"],
+                    LearningCandidateReviewRecord.candidate_id
+                    == values["candidate_id"],
+                )
+                .with_for_update()
+            )
+            if review is None:
+                raise LearningConflictError("learning review is not available")
+            run = await database.scalar(
+                select(LearningRunRecord)
+                .where(
+                    LearningRunRecord.organization_id == values["organization_id"],
+                    LearningRunRecord.learning_id == review.learning_id,
+                )
+                .with_for_update()
+            )
+            if run is None or run.payload is None:
+                raise LearningConflictError("canonical learning is not available")
+            if review.status != LearningReviewStatus.PENDING.value:
+                if (
+                    review.idempotency_key == values["idempotency_key"]
+                    and review.status == status.value
+                    and review.justification == values["justification"]
+                ):
+                    return LearningReviewDecision(
+                        review=self._review_model(review), result=self._model(run)
+                    )
+                raise LearningConflictError(
+                    "learning review decision conflicts with persisted decision"
+                )
+            result = apply_learning_review(
+                self._model(run),
+                candidate_id=values["candidate_id"],
+                approved=status is LearningReviewStatus.APPROVED,
+            )
+            review.status = status.value
+            review.justification = values["justification"]
+            review.actor_id = values["actor_id"]
+            review.idempotency_key = values["idempotency_key"]
+            review.decided_at = now
+            review.updated_at = now
+            review.version += 1
+            run.status = result.status.value
+            run.payload = result.model_dump(mode="json")
+            run.updated_at = now
+            run.version += 1
+            await self._persist_children(
+                database, result, result.validations, now, update_existing=True
+            )
+            await database.commit()
+            return LearningReviewDecision(
+                review=self._review_model(review), result=result
+            )
+
+    def finalize_review(
+        self, *, result: LearningResult, event: Event
+    ) -> LearningResult:
+        validate_learning_terminal_event(result, event)
+        with self._sync_lock:
+            return _run(self._finalize_review(result, event))
+
+    async def _finalize_review(
+        self, result: LearningResult, event: Event
+    ) -> LearningResult:
+        async with self._session_factory() as database:
+            record = await database.scalar(
+                select(LearningRunRecord)
+                .where(
+                    LearningRunRecord.organization_id == result.organization_id,
+                    LearningRunRecord.learning_id == result.learning_id,
+                )
+                .with_for_update()
+            )
+            if record is None or record.payload is None:
+                raise LearningConflictError("canonical learning is not available")
+            if record.status == LearningStatus.COMPLETED.value:
+                return self._model(record)
+            if record.status != LearningStatus.VALIDATED.value:
+                raise LearningConflictError("learning still has pending human reviews")
+            record.status = result.status.value
+            record.payload = result.model_dump(mode="json")
+            record.updated_at = self._clock()
+            record.version += 1
+            record.claim_owner = None
+            record.claim_expires_at = None
+            await self._persist_children(
+                database,
+                result,
+                result.validations,
+                self._clock(),
+                update_existing=True,
+            )
+            await append_outbox_event(
+                database,
+                event,
+                aggregate_type="learning",
+                aggregate_id=result.learning_id,
+                execution_id=result.execution_id,
+                observation_id=result.observation_id,
+                learning_id=result.learning_id,
+            )
+            await database.commit()
+        return result.model_copy(deep=True)
 
     def acquire(self, **kwargs: Any) -> LearningAcquisition:
         with self._sync_lock:
@@ -245,7 +467,11 @@ class PostgresLearningRepository(LearningRepository):
                 record.version += 1
                 record.updated_at = now
                 await database.commit()
-            staged = self._model(record) if record.status == "validated" else None
+            staged = (
+                self._model(record)
+                if record.status in {"validated", "human_review_required"}
+                else None
+            )
             return LearningAcquisition(claim=self._claim(record), staged_result=staged)
 
     def stage_validated(
@@ -280,14 +506,14 @@ class PostgresLearningRepository(LearningRepository):
                 or record.version != claim.version
             ):
                 raise LearningConflictError("stale or lost learning claim")
-            if record.status == "validated":
+            if record.status in {"validated", "human_review_required"}:
                 existing = self._model(record)
                 if existing.fingerprint != result.fingerprint:
                     raise LearningConflictError("learning fingerprint conflict")
                 return existing
             if record.status != "processing":
                 raise LearningConflictError("learning cannot be staged")
-            record.status = "validated"
+            record.status = result.status.value
             record.payload = result.model_dump(mode="json")
             record.updated_at = now
             await self._persist_children(database, result, validations, now)
@@ -388,42 +614,110 @@ class PostgresLearningRepository(LearningRepository):
         result: LearningResult,
         validations: tuple[LearningValidation, ...],
         now: datetime,
+        update_existing: bool = False,
     ) -> None:
         validation_by_id = {item.learning_candidate_id: item for item in validations}
         for candidate in result.candidates:
             validation = validation_by_id[candidate.learning_candidate_id]
             reason = ",".join(validation.reason_codes)
-            await database.execute(
-                insert(LearningCandidateRecord)
-                .values(
-                    candidate_id=candidate.learning_candidate_id,
-                    learning_id=result.learning_id,
-                    candidate_type=candidate.category.value,
-                    assertion=candidate.statement,
-                    confidence=candidate.confidence,
-                    validation_status=validation.outcome.value,
-                    validation_reason=reason,
-                    evidence=list(candidate.evidence_references),
-                    requires_human_review=validation.human_review_required,
-                    payload=candidate.model_dump(mode="json"),
-                    created_at=now,
-                )
-                .on_conflict_do_nothing(index_elements=["learning_id", "candidate_id"])
+            candidate_insert = insert(LearningCandidateRecord)
+            candidate_statement = candidate_insert.values(
+                candidate_id=candidate.learning_candidate_id,
+                learning_id=result.learning_id,
+                candidate_type=candidate.category.value,
+                assertion=candidate.statement,
+                confidence=candidate.confidence,
+                validation_status=validation.outcome.value,
+                validation_reason=reason,
+                evidence=list(candidate.evidence_references),
+                requires_human_review=validation.human_review_required,
+                payload=candidate.model_dump(mode="json"),
+                created_at=now,
             )
-            await database.execute(
-                insert(LearningValidationRecord)
-                .values(
-                    candidate_id=candidate.learning_candidate_id,
-                    learning_id=result.learning_id,
-                    status=validation.outcome.value,
-                    reason=reason,
-                    evidence=list(candidate.evidence_references),
-                    requires_human_review=validation.human_review_required,
-                    payload=validation.model_dump(mode="json"),
-                    created_at=now,
+            if update_existing:
+                candidate_statement = candidate_statement.on_conflict_do_update(
+                    index_elements=["candidate_id"],
+                    set_={
+                        "validation_status": validation.outcome.value,
+                        "validation_reason": reason,
+                        "requires_human_review": validation.human_review_required,
+                        "payload": candidate.model_dump(mode="json"),
+                    },
                 )
-                .on_conflict_do_nothing(index_elements=["learning_id", "candidate_id"])
+            else:
+                candidate_statement = candidate_statement.on_conflict_do_nothing(
+                    index_elements=["learning_id", "candidate_id"]
+                )
+            await database.execute(candidate_statement)
+            validation_insert = insert(LearningValidationRecord)
+            validation_statement = validation_insert.values(
+                candidate_id=candidate.learning_candidate_id,
+                learning_id=result.learning_id,
+                status=validation.outcome.value,
+                reason=reason,
+                evidence=list(candidate.evidence_references),
+                requires_human_review=validation.human_review_required,
+                payload=validation.model_dump(mode="json"),
+                created_at=now,
             )
+            if update_existing:
+                validation_statement = validation_statement.on_conflict_do_update(
+                    index_elements=["candidate_id"],
+                    set_={
+                        "status": validation.outcome.value,
+                        "reason": reason,
+                        "requires_human_review": validation.human_review_required,
+                        "payload": validation.model_dump(mode="json"),
+                    },
+                )
+            else:
+                validation_statement = validation_statement.on_conflict_do_nothing(
+                    index_elements=["learning_id", "candidate_id"]
+                )
+            await database.execute(validation_statement)
+            if (
+                validation.human_review_required
+                and result.status is LearningStatus.HUMAN_REVIEW_REQUIRED
+            ):
+                from uuid import NAMESPACE_URL, uuid5
+
+                review_id = uuid5(
+                    NAMESPACE_URL,
+                    f"ecos:learning-review:{result.organization_id}:{candidate.learning_candidate_id}",
+                )
+                await database.execute(
+                    insert(LearningCandidateReviewRecord)
+                    .values(
+                        review_id=review_id,
+                        organization_id=result.organization_id,
+                        session_id=result.session_id,
+                        learning_id=result.learning_id,
+                        candidate_id=candidate.learning_candidate_id,
+                        status=LearningReviewStatus.PENDING.value,
+                        version=1,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    .on_conflict_do_nothing(index_elements=["candidate_id"])
+                )
+
+    @staticmethod
+    def _review_model(record: LearningCandidateReviewRecord) -> LearningCandidateReview:
+        return LearningCandidateReview(
+            review_id=record.review_id,
+            organization_id=record.organization_id,
+            session_id=record.session_id,
+            learning_id=record.learning_id,
+            learning_candidate_id=record.candidate_id,
+            status=LearningReviewStatus(record.status),
+            justification=record.justification,
+            actor_id=record.actor_id,
+            idempotency_key=record.idempotency_key,
+            decided_at=record.decided_at,
+            version=record.version,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
 
     @staticmethod
     def _validate_scope(record: LearningRunRecord, values: dict[str, Any]) -> None:

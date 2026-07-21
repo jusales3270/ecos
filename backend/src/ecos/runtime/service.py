@@ -17,6 +17,7 @@ from ecos.governance import (
     GovernanceResult,
     GovernanceResultStatus,
 )
+from ecos.learning import LearningResult, LearningStatus
 from ecos.orchestrator import (
     ApprovalState as OrchestratorApprovalState,
 )
@@ -395,6 +396,17 @@ class AuthenticatedRuntimeService:
             raise RuntimeCheckpointConflictError(
                 "executing runtime checkpoint rejects a different decision"
             )
+        if checkpoint.status is RuntimeCheckpointStatus.WAITING_HUMAN_REVIEW:
+            governance = self._governance(checkpoint)
+            if self._decision_was_recorded(
+                governance, command.approval_decision.approval_decision_id
+            ):
+                return self._result(
+                    checkpoint, PipelineExecutionStatus.WAITING_HUMAN_REVIEW
+                )
+            raise RuntimeCheckpointConflictError(
+                "human-review runtime checkpoint cannot accept an approval decision"
+            )
         if checkpoint.status is RuntimeCheckpointStatus.COMPLETED:
             governance = self._governance(checkpoint)
             if self._decision_was_recorded(
@@ -601,6 +613,77 @@ class AuthenticatedRuntimeService:
     ) -> RuntimeCheckpoint | None:
         """Return one checkpoint through its mandatory organization scope."""
         return self._checkpoints.get(organization_id, session_id)
+
+    def complete_learning_review(
+        self,
+        organization_id: UUID,
+        session_id: UUID,
+        result: LearningResult,
+    ) -> RuntimeCheckpoint:
+        """Atomically advance a paused runtime after all learning reviews finish."""
+        checkpoint = self._checkpoints.get(organization_id, session_id)
+        if checkpoint is None:
+            raise RuntimeCheckpointNotFoundError("runtime checkpoint does not exist")
+        if result.organization_id != organization_id or result.session_id != session_id:
+            raise RuntimeCheckpointScopeError("learning result scope mismatch")
+        if result.status is not LearningStatus.COMPLETED:
+            return checkpoint
+        if checkpoint.status is RuntimeCheckpointStatus.COMPLETED:
+            return checkpoint
+        if checkpoint.status is not RuntimeCheckpointStatus.WAITING_HUMAN_REVIEW:
+            raise RuntimeCheckpointConflictError(
+                "runtime is not waiting for learning review"
+            )
+        found = False
+        stage_results = []
+        for stage in checkpoint.stage_results:
+            if stage.engine == "learning":
+                found = True
+                stage = stage.model_copy(
+                    update={"output": self._codec.encode("learning", result)}
+                )
+            stage_results.append(stage)
+        if not found:
+            raise RuntimeCheckpointConflictError(
+                "runtime checkpoint has no learning artifact"
+            )
+        completed = checkpoint.model_copy(
+            update={
+                "stage_results": tuple(stage_results),
+                "status": RuntimeCheckpointStatus.COMPLETED,
+                "version": checkpoint.version + 1,
+                "updated_at": self._now(),
+            }
+        )
+        stored = self._checkpoints.save(completed, expected_version=checkpoint.version)
+        session = self._scoped_session(organization_id, session_id)
+        if session.state.lifecycle_status is SessionLifecycleStatus.PAUSED:
+            self._session_service.record_transition(
+                SessionTransition(
+                    session_id=session_id,
+                    transition_type=TransitionType.COMPLETE,
+                    from_status=SessionLifecycleStatus.PAUSED,
+                    to_status=SessionLifecycleStatus.COMPLETED,
+                    reason="Learning completed after governed human review.",
+                )
+            )
+            self._session_service.update_state(
+                session.state.model_copy(
+                    update={
+                        "lifecycle_status": SessionLifecycleStatus.COMPLETED,
+                        "active_engine": None,
+                        "progress": 1.0,
+                        "updated_at": self._now(),
+                    }
+                )
+            )
+        latest = self._scoped_session(organization_id, session_id)
+        self._session_service.save_snapshot(
+            SessionSnapshot(
+                session_id=session_id, state=latest.state, context=latest.context
+            )
+        )
+        return stored
 
     def governance_result(self, checkpoint: RuntimeCheckpoint) -> GovernanceResult:
         """Return the validated governance result stored in a runtime checkpoint."""
@@ -900,6 +983,9 @@ class AuthenticatedRuntimeService:
         status = {
             PipelineExecutionStatus.WAITING_APPROVAL: (
                 RuntimeCheckpointStatus.WAITING_APPROVAL
+            ),
+            PipelineExecutionStatus.WAITING_HUMAN_REVIEW: (
+                RuntimeCheckpointStatus.WAITING_HUMAN_REVIEW
             ),
             PipelineExecutionStatus.COMPLETED: RuntimeCheckpointStatus.COMPLETED,
         }.get(result.status, RuntimeCheckpointStatus.FAILED)

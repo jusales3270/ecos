@@ -57,6 +57,7 @@ class RuntimeCheckpointStatus(StrEnum):
     """Persisted lifecycle states for an authenticated runtime invocation."""
 
     WAITING_APPROVAL = "waiting_approval"
+    WAITING_HUMAN_REVIEW = "waiting_human_review"
     EXECUTING = "executing"
     COMPLETED = "completed"
     FAILED = "failed"

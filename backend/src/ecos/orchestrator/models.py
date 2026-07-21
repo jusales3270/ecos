@@ -46,6 +46,7 @@ class PipelineExecutionStatus(StrEnum):
     VALIDATING = "validating"
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
+    WAITING_HUMAN_REVIEW = "waiting_human_review"
     BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"

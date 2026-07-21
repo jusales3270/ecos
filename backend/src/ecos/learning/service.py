@@ -27,6 +27,7 @@ from .models import (
     LearningObject,
     LearningRequest,
     LearningResult,
+    LearningReviewStatus,
     LearningStatus,
     LearningValidation,
     LearningValidationOutcome,
@@ -180,6 +181,8 @@ class LearningService:
         if claim is None:
             raise RuntimeError("learning acquisition returned no claim or result")
         if acquisition.staged_result is not None:
+            if acquisition.staged_result.status is LearningStatus.HUMAN_REVIEW_REQUIRED:
+                return acquisition.staged_result
             return self._complete_staged(request, claim, acquisition.staged_result)
         started_at = self._clock()
         self._publish_learning(request, EventType.LEARNING_STARTED, {})
@@ -282,7 +285,12 @@ class LearningService:
             observation_id=request.observation_result.observation_id,
             policy_version=policy_version,
             fingerprint=fingerprint,
-            status=LearningStatus.VALIDATED,
+            status=(
+                LearningStatus.HUMAN_REVIEW_REQUIRED
+                if human_review_candidates
+                and request.human_review_state == "enabled"
+                else LearningStatus.VALIDATED
+            ),
             candidates=candidates,
             validations=validations,
             validated_candidates=validated_candidates,
@@ -301,7 +309,12 @@ class LearningService:
             started_at=started_at,
             completed_at=completed_at,
             duration=max((completed_at - started_at).total_seconds(), 0.0),
-            reason_codes=("learning_validated",),
+            reason_codes=(
+                ("human_review_pending",)
+                if human_review_candidates
+                and request.human_review_state == "enabled"
+                else ("learning_validated",)
+            ),
             warnings=request.observation_result.warnings,
             safe_metadata=dict(request.safe_metadata),
         )
@@ -310,7 +323,100 @@ class LearningService:
             result=staged,
             validations=validations,
         )
+        if staged.status is LearningStatus.HUMAN_REVIEW_REQUIRED:
+            return staged
         return self._complete_staged(request, claim, staged, key=key)
+
+    def review_candidate(
+        self,
+        *,
+        organization_id: UUID,
+        candidate_id: UUID,
+        actor_id: UUID,
+        approve: bool,
+        justification: str,
+        idempotency_key: str,
+    ) -> tuple[object, LearningResult]:
+        """Persist a human candidate decision and finish learning when resolved."""
+        decision = self._repository.decide_review(
+            organization_id=organization_id,
+            candidate_id=candidate_id,
+            actor_id=actor_id,
+            status=(
+                LearningReviewStatus.APPROVED
+                if approve
+                else LearningReviewStatus.REJECTED
+            ),
+            justification=justification,
+            idempotency_key=idempotency_key,
+        )
+        result = decision.result
+        event_type = (
+            EventType.LEARNING_VALIDATED if approve else EventType.LEARNING_REJECTED
+        )
+        envelope = self._event_service.publish(
+            Event(
+                event_type=event_type,
+                source="learning.human_review",
+                organization_id=organization_id,
+                session_id=result.session_id,
+                actor_reference=str(actor_id),
+                payload={
+                    "organization_id": str(organization_id),
+                    "learning_id": str(result.learning_id),
+                    "learning_candidate_id": str(candidate_id),
+                    "review_status": decision.review.status.value,
+                    "review_version": decision.review.version,
+                    "justification": justification,
+                },
+                metadata=EventMetadata(correlation_id=result.correlation_id),
+                priority=EventPriority.HIGH,
+                reason_codes=("human_review_decision",),
+            )
+        )
+        self._event_service.dispatch(envelope)
+        if result.status is LearningStatus.HUMAN_REVIEW_REQUIRED:
+            return decision.review, result
+        stored: list[str] = []
+        for proposal in result.memory_update_proposals:
+            stored.append(str(self._store_proposal(result, proposal).memory.id))
+        completed_at = self._clock()
+        completed = result.model_copy(
+            update={
+                "status": LearningStatus.COMPLETED,
+                "stored_memory_references": tuple(stored),
+                "completed_at": completed_at,
+                "duration": max(
+                    (completed_at - result.started_at).total_seconds(), 0.0
+                ),
+                "reason_codes": ("learning_completed_after_human_review",),
+            }
+        )
+        terminal = Event(
+            id=terminal_event_id(
+                organization_id=organization_id,
+                aggregate_type="learning",
+                aggregate_id=completed.learning_id,
+                event_type=EventType.LEARNING_COMPLETED.value,
+            ),
+            event_type=EventType.LEARNING_COMPLETED,
+            source="learning",
+            organization_id=organization_id,
+            session_id=completed.session_id,
+            actor_reference=str(actor_id),
+            payload={
+                "organization_id": str(organization_id),
+                "learning_id": str(completed.learning_id),
+                "status": completed.status.value,
+                "stored_memory_count": len(stored),
+            },
+            metadata=EventMetadata(correlation_id=completed.correlation_id),
+            priority=EventPriority.NORMAL,
+        )
+        completed = self._repository.finalize_review(result=completed, event=terminal)
+        if not self._repository.supports_transactional_outbox:
+            self._event_service.dispatch(self._event_service.publish(terminal))
+        return decision.review, completed
 
     def _complete_staged(
         self,
@@ -462,7 +568,14 @@ class LearningService:
                     policy_references=tuple(request.applicable_policies),
                     relationship=RelationshipType.ASSOCIATED_WITH,
                     reason_codes=(code, "no_causality_inferred"),
-                    safe_metadata={"observation_status": observation.status.value},
+                    safe_metadata={
+                        "observation_status": observation.status.value,
+                        **(
+                            {"objective": request.safe_metadata["objective"]}
+                            if request.safe_metadata.get("objective")
+                            else {}
+                        ),
+                    },
                 )
             )
         recommendation = request.recommendation or getattr(
@@ -660,6 +773,11 @@ class LearningService:
                 "statement": candidate.statement,
                 "category": candidate.category.value,
                 "relationship": candidate.relationship.value,
+                **(
+                    {"objective": candidate.safe_metadata["objective"]}
+                    if candidate.safe_metadata.get("objective")
+                    else {}
+                ),
             },
             evidence_references=candidate.evidence_references,
             source_references=candidate.source_references,

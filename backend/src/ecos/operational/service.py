@@ -87,6 +87,9 @@ DEMO_OPERATOR = UUID("10000000-0000-4000-8000-000000000101")
 DEMO_APPROVER = UUID("10000000-0000-4000-8000-000000000102")
 DEMO_AUDITOR = UUID("10000000-0000-4000-8000-000000000103")
 DEMO_ADMIN = UUID("10000000-0000-4000-8000-000000000104")
+DEMO_BOARD_1 = UUID("10000000-0000-4000-8000-000000000111")
+DEMO_BOARD_2 = UUID("10000000-0000-4000-8000-000000000112")
+DEMO_BOARD_3 = UUID("10000000-0000-4000-8000-000000000113")
 DEMO_TENANT_B_USER = UUID("20000000-0000-4000-8000-000000000201")
 
 
@@ -164,6 +167,21 @@ class OperationalService:
                 DEMO_ADMIN,
                 (Role.ADMIN,),
                 (),
+            ),
+            *tuple(
+                (
+                    f"board-{index}@demo.ecos.local",
+                    f"ECOS Demo Board {index}",
+                    f"board-{index}-demo-password",
+                    "ECOS Demo Organization",
+                    DEMO_ORG_A,
+                    user_id,
+                    (Role.EXECUTIVE_BOARD,),
+                    (),
+                )
+                for index, user_id in enumerate(
+                    (DEMO_BOARD_1, DEMO_BOARD_2, DEMO_BOARD_3), start=1
+                )
             ),
             (
                 "operator@tenant-b.ecos.local",
@@ -623,6 +641,7 @@ class OperationalService:
         elif checkpoint is not None:
             state = {
                 RuntimeCheckpointStatus.WAITING_APPROVAL: "waiting_approval",
+                RuntimeCheckpointStatus.WAITING_HUMAN_REVIEW: "waiting_human_review",
                 RuntimeCheckpointStatus.EXECUTING: "executing",
                 RuntimeCheckpointStatus.COMPLETED: "completed",
             }.get(checkpoint.status, "error")
@@ -684,6 +703,7 @@ class OperationalService:
         projected_status = {
             "thinking": OperationalSessionStatus.PROCESSING,
             "waiting_approval": OperationalSessionStatus.WAITING_APPROVAL,
+            "waiting_human_review": OperationalSessionStatus.WAITING_HUMAN_REVIEW,
             "executing": OperationalSessionStatus.EXECUTING,
             "completed": OperationalSessionStatus.COMPLETED,
             "error": OperationalSessionStatus.FAILED,
@@ -1469,6 +1489,7 @@ class OperationalService:
         }[request.status]
         runtime_status = {
             RuntimeCheckpointStatus.WAITING_APPROVAL: "waiting_approval",
+            RuntimeCheckpointStatus.WAITING_HUMAN_REVIEW: "waiting_human_review",
             RuntimeCheckpointStatus.EXECUTING: "executing",
             RuntimeCheckpointStatus.COMPLETED: "completed",
             RuntimeCheckpointStatus.FAILED: "error",

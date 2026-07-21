@@ -13,6 +13,7 @@ import {
   LearningPage,
   LoginPage,
   MemoryPage,
+  ObservationsPage,
   OverviewPage,
   SessionDetailPage,
   SessionsPage
@@ -35,6 +36,7 @@ const router = createBrowserRouter([
       { path: "memory", element: <MemoryPage /> },
       { path: "approvals", element: <ApprovalsPage /> },
       { path: "executions", element: <ExecutionsPage /> },
+      { path: "observations", element: <ObservationsPage /> },
       { path: "knowledge", element: <KnowledgePage /> },
       { path: "governance", element: <GovernancePage /> },
       { path: "audit", element: <AuditPage /> },

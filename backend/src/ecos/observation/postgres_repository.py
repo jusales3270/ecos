@@ -108,6 +108,28 @@ class PostgresObservationRepository(ObservationRepository):
             )
             return None if record is None else self._model(record)
 
+    def list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[ObservationResult]:
+        with self._sync_lock:
+            return _run(self._list_by_session(organization_id, session_id))
+
+    async def _list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[ObservationResult]:
+        async with self._session_factory() as database:
+            records = (
+                await database.scalars(
+                    select(ObservationResultRecord)
+                    .where(
+                        ObservationResultRecord.organization_id == organization_id,
+                        ObservationResultRecord.session_id == session_id,
+                    )
+                    .order_by(ObservationResultRecord.created_at)
+                )
+            ).all()
+        return [self._model(record) for record in records]
+
     def save(self, result: ObservationResult) -> ObservationResult:
         with self._sync_lock:
             return _run(self._save(result, event=None))

@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-test("complete operational cycle with independent approval and audit", async ({
-  page,
-  request
-}) => {
+test("complete canonical cognitive cycle and reuse validated memory", async ({ page }) => {
+  test.setTimeout(180_000);
+  const objective = `Canonical homologation ${Date.now()}`;
+  const requestedPaths: string[] = [];
+  page.on("request", (request) => requestedPaths.push(new URL(request.url()).pathname));
+
   await page.goto("/login");
   await page.getByLabel("E-mail").fill("operator@demo.ecos.local");
   await page.getByLabel("Senha").fill("operator-demo-password");
@@ -11,58 +13,69 @@ test("complete operational cycle with independent approval and audit", async ({
   await expect(page.getByRole("heading", { name: "Visão Cognitiva" })).toBeVisible();
 
   await page.getByRole("link", { name: "Sessões" }).click();
+  await page.getByLabel("Objetivo da sessão").fill(objective);
+  await page.getByLabel("Descrição da sessão").fill("Full canonical cognitive cycle");
   await page.getByRole("button", { name: "Criar sessão" }).click();
+  await page.waitForURL(/\/sessions\/[0-9a-f-]{36}$/);
+  const firstSessionUrl = page.url();
+  const firstSessionId = firstSessionUrl.split("/").at(-1) ?? "";
   await expect(page.getByRole("button", { name: "Iniciar cognição" })).toBeVisible();
   await page.getByRole("button", { name: "Iniciar cognição" }).click();
-  await expect(page.getByText("Independent approval requested")).toBeVisible();
-  await expect(
-    page.getByText("Proceed with a bounded dry-run execution")
-  ).toBeVisible();
+  await expect(page.getByText("waiting_approval", { exact: true })).toBeVisible({ timeout: 30_000 });
 
-  await page.getByRole("link", { name: "Aprovações" }).click();
-  const requesterApproval = page.locator(".approval-board .panel").first();
-  await requesterApproval.getByLabel("Justificativa").fill("Revisão do solicitante");
-  await requesterApproval.getByRole("button", { name: "Aprovar" }).click();
-  await expect(page.getByText("Você não tem permissão para registrar esta decisão.")).toBeVisible();
-
-  await page.getByRole("button", { name: "Sair" }).click();
-  await page.getByLabel("E-mail").fill("approver@demo.ecos.local");
-  await page.getByLabel("Senha").fill("approver-demo-password");
-  await page.getByRole("button", { name: "Entrar" }).click();
-  await page.getByRole("link", { name: "Aprovações" }).click();
-  const independentApproval = page.locator(".approval-board .panel").first();
-  await independentApproval.getByLabel("Justificativa").fill("Revisão independente concluída");
-  await independentApproval.getByRole("button", { name: "Aprovar" }).click();
-  await expect(independentApproval.getByText("approved", { exact: true })).toBeVisible();
+  for (const index of [1, 2, 3]) {
+    await page.getByRole("button", { name: "Sair" }).click();
+    await page.getByLabel("E-mail").fill(`board-${index}@demo.ecos.local`);
+    await page.getByLabel("Senha").fill(`board-${index}-demo-password`);
+    await page.getByRole("button", { name: "Entrar" }).click();
+    await page.getByRole("link", { name: "Aprovações" }).click();
+    const approval = page.locator(`[data-session-id="${firstSessionId}"] .panel`);
+    await approval.getByLabel("Justificativa").fill(`Board review ${index}`);
+    await approval.getByRole("button", { name: "Aprovar" }).click();
+    await expect(approval.getByText(index < 3 ? "partially_approved" : "approved", { exact: true })).toBeVisible({ timeout: 30_000 });
+  }
 
   await page.getByRole("link", { name: "Execuções" }).click();
-  await page.locator("button:not([disabled])", { hasText: "Iniciar execução" }).first().click();
-  await expect(page.getByText("Dry-run connector completed")).toBeVisible();
-  await expect(page.getByText("safe validation path")).toBeVisible();
+  await expect(page.locator(`[data-session-id="${firstSessionId}"]`).getByText(/ExecutionResult/)).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "Observações" }).click();
+  await expect(page.locator(`[data-session-id="${firstSessionId}"]`).getByText(/ObservationResult/)).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "Aprendizado" }).click();
+  const learning = page.locator(`[data-session-id="${firstSessionId}"]`);
+  const pendingReview = learning.locator('textarea[aria-label^="Justificativa"]');
+  await pendingReview.fill("Approved for validated organizational reuse", { timeout: 30_000 });
+  await learning.getByRole("button", { name: "Aprovar candidato" }).click();
+  await expect(learning.getByText("completed", { exact: true })).toBeVisible({ timeout: 30_000 });
 
-  await page.getByRole("link", { name: "Observabilidade" }).click();
-  await expect(page.getByText("EXECUTION_COMPLETED")).toBeVisible();
-
-  const login = await request.post("/api/v1/auth/login", {
-    data: {
-      email: "operator@tenant-b.ecos.local",
-      password: "tenant-b-demo-password"
-    }
-  });
-  expect(login.ok()).toBeTruthy();
-  const setCookie =
-    login
-      .headersArray()
-      .find((item) => item.name.toLowerCase() === "set-cookie")?.value ?? "";
-  const crossTenant = await request.get(
-    "/api/v1/sessions/10000000-0000-4000-8000-000000000999",
-    { headers: { cookie: setCookie } }
-  );
-  expect(crossTenant.status()).toBe(403);
+  await page.getByRole("link", { name: "Memória" }).click();
+  await expect(page.getByRole("heading", { name: "Memória", exact: true })).toBeVisible();
+  const memoryTitle = await page.locator(`[data-session-id="${firstSessionId}"] .panel h2`).first().textContent();
+  expect(memoryTitle).toContain("Validated learning");
 
   await page.getByRole("button", { name: "Sair" }).click();
-  await page.goto("/sessions");
-  await expect(page.getByRole("heading", { name: "ECOS Operacional" })).toBeVisible();
+  await page.getByLabel("E-mail").fill("operator@demo.ecos.local");
+  await page.getByLabel("Senha").fill("operator-demo-password");
+  await page.getByRole("button", { name: "Entrar" }).click();
+  await page.getByRole("link", { name: "Sessões" }).click();
+  await page.getByLabel("Objetivo da sessão").fill(objective);
+  await page.getByLabel("Descrição da sessão").fill("Reuse validated memory");
+  await page.getByRole("button", { name: "Criar sessão" }).click();
+  await page.waitForURL(/\/sessions\/[0-9a-f-]{36}$/);
+  await page.getByRole("button", { name: "Iniciar cognição" }).click();
+  await expect(page.getByText(memoryTitle ?? "missing-memory-title")).toBeVisible({ timeout: 30_000 });
+
+  await page.getByRole("button", { name: "Sair" }).click();
+  await page.getByLabel("E-mail").fill("operator@tenant-b.ecos.local");
+  await page.getByLabel("Senha").fill("tenant-b-demo-password");
+  await page.getByRole("button", { name: "Entrar" }).click();
+  await expect(page.getByRole("heading", { name: "Visão Cognitiva" })).toBeVisible({ timeout: 30_000 });
+  await page.goto(firstSessionUrl);
+  await expect(page.getByText("resource is not available")).toBeVisible({ timeout: 30_000 });
+
+  expect(requestedPaths.some((path) => path.endsWith("/start"))).toBe(false);
+  expect(requestedPaths).toContain("/api/v1/sara/interactions");
+  expect(requestedPaths).toContain("/api/v1/observations");
+  expect(requestedPaths).toContain("/api/v1/learning");
+  expect(requestedPaths).toContain("/api/v1/memories");
 });
 
 test("governed runtime approval keeps partial quorum waiting and completes automatically", async ({ page }) => {
