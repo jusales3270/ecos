@@ -1,21 +1,35 @@
 """Tests for the application status and health endpoints."""
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 
-from ecos.main import app
+from ecos.main import app, settings
 
 
-def test_root_returns_application_status() -> None:
-    """GET / returns the public application status."""
+def test_frontend_root_spa_fallback_and_readiness(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Frontend routes serve the build while readiness remains JSON."""
+    index = tmp_path / "index.html"
+    index.write_text("<!doctype html><html><body>ECOS frontend</body></html>")
+    monkeypatch.setattr(settings, "frontend_static_dir", str(tmp_path))
+
     with TestClient(app) as client:
-        response = client.get("/")
+        root = client.get("/")
+        spa_route = client.get("/arbitrary/react/route")
+        ready = client.get("/health/ready")
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "name": "ECOS",
-        "version": "0.1.0-rc.1",
-        "status": "running",
-    }
+    assert root.status_code == 200
+    assert root.headers["content-type"].startswith("text/html")
+    assert root.text == index.read_text()
+    assert spa_route.status_code == 200
+    assert spa_route.headers["content-type"].startswith("text/html")
+    assert spa_route.text == index.read_text()
+    assert ready.status_code == 200
+    assert ready.headers["content-type"].startswith("application/json")
+    assert ready.json()["status"] == "ready"
 
 
 def test_health_returns_backend_container_provider_and_runtime_status() -> None:
