@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from ecos.database import create_database_engine, create_session_factory
+from ecos.events import Event, EventMetadata, EventPriority, EventType
 from ecos.memory.models import (
     MemoryObject,
     MemoryType,
@@ -23,6 +24,7 @@ from ecos.memory.models import (
 )
 from ecos.memory.orm import MemoryRecord
 from ecos.memory.repository import MemoryRepository, ValidatedMemoryConflictError
+from ecos.outbox import append_outbox_event, terminal_event_id
 
 
 def _run[ResultT](coroutine: Coroutine[object, object, ResultT]) -> ResultT:
@@ -37,6 +39,8 @@ def _run[ResultT](coroutine: Coroutine[object, object, ResultT]) -> ResultT:
 
 class PostgresMemoryRepository(MemoryRepository):
     """Persist memory objects in PostgreSQL through SQLAlchemy."""
+
+    supports_transactional_outbox = True
 
     def __init__(
         self,
@@ -105,20 +109,51 @@ class PostgresMemoryRepository(MemoryRepository):
                 )
                 .returning(MemoryRecord.id)
             )
-            await database.commit()
             record = await database.scalar(
                 select(MemoryRecord).where(
                     MemoryRecord.organization_id == write.organization_id,
                     MemoryRecord.proposal_id == write.proposal_id,
                 )
             )
-        if record is None:
-            raise ValidatedMemoryConflictError("validated memory disappeared")
-        existing = self._model(record)
-        if not self._matches_write(existing, write):
-            raise ValidatedMemoryConflictError(
-                "proposal_id conflicts with validated fingerprint or provenance"
-            )
+            if record is None:
+                raise ValidatedMemoryConflictError("validated memory disappeared")
+            existing = self._model(record)
+            if not self._matches_write(existing, write):
+                raise ValidatedMemoryConflictError(
+                    "proposal_id conflicts with validated fingerprint or provenance"
+                )
+            if inserted is not None:
+                event = Event(
+                    id=terminal_event_id(
+                        organization_id=write.organization_id,
+                        aggregate_type="memory",
+                        aggregate_id=existing.id,
+                        event_type=EventType.MEMORY_UPDATED.value,
+                    ),
+                    event_type=EventType.MEMORY_UPDATED,
+                    source="learning",
+                    organization_id=write.organization_id,
+                    session_id=write.session_id,
+                    payload={
+                        "organization_id": str(write.organization_id),
+                        "memory_id": str(existing.id),
+                        "proposal_id": str(write.proposal_id),
+                        "learning_id": str(write.learning_id),
+                    },
+                    metadata=EventMetadata(correlation_id=write.correlation_id),
+                    priority=EventPriority.NORMAL,
+                )
+                await append_outbox_event(
+                    database,
+                    event,
+                    aggregate_type="memory",
+                    aggregate_id=existing.id,
+                    execution_id=write.execution_id,
+                    observation_id=write.observation_id,
+                    learning_id=write.learning_id,
+                    memory_id=existing.id,
+                )
+            await database.commit()
         return ValidatedMemoryStoreResult(memory=existing, created=inserted is not None)
 
     def get(self, memory_id: UUID) -> MemoryObject | None:

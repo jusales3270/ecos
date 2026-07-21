@@ -17,6 +17,7 @@ from ecos.memory import (
 )
 from ecos.observation import ObservedOutcomeStatus
 from ecos.observation.repository import ObservationConflictError, ObservationRepository
+from ecos.outbox import terminal_event_id
 
 from .models import (
     CalibrationDirection,
@@ -327,7 +328,10 @@ class LearningService:
         for proposal in staged.memory_update_proposals:
             stored_result = self._store_proposal(staged, proposal)
             stored.append(str(stored_result.memory.id))
-            if stored_result.created:
+            if (
+                stored_result.created
+                and not self._memory_service.supports_transactional_outbox
+            ):
                 self._event_service.dispatch(
                     self._event_service.publish(
                         Event(
@@ -364,22 +368,21 @@ class LearningService:
                 "reason_codes": ("learning_completed",),
             }
         )
-        result = self._repository.complete(
-            claim=claim, result=result, validations=staged.validations
+        event = self._terminal_learning_event(
+            request, EventType.LEARNING_COMPLETED, result
+        )
+        result = self._repository.complete_terminal(
+            claim=claim,
+            result=result,
+            validations=staged.validations,
+            event=event,
         )
         self._idempotency_provider.put(
             key or self._idempotency_key(request), result.fingerprint, result
         )
-        self._publish_learning(
-            request,
-            EventType.LEARNING_COMPLETED,
-            {
-                "learning_id": str(result.learning_id),
-                "status": result.status.value,
-                "fingerprint": result.fingerprint,
-                "durable_reference": f"learning:{result.learning_id}",
-            },
-        )
+        if not self._repository.supports_transactional_outbox:
+            envelope = self._event_service.publish(event)
+            self._event_service.dispatch(envelope)
         return result
 
     def _publish(
@@ -739,6 +742,42 @@ class LearningService:
             )
         )
         self._event_service.dispatch(envelope)
+
+    def _terminal_learning_event(
+        self,
+        request: LearningRequest,
+        event_type: EventType,
+        result: LearningResult,
+    ) -> Event:
+        return Event(
+            id=terminal_event_id(
+                organization_id=request.organization_id,
+                aggregate_type="learning",
+                aggregate_id=result.learning_id,
+                event_type=event_type.value,
+            ),
+            event_type=event_type,
+            source="learning",
+            session_id=request.session_id,
+            organization_id=request.organization_id,
+            payload={
+                "organization_id": str(request.organization_id),
+                "plan_id": str(request.plan_id),
+                "execution_id": None
+                if request.execution_id is None
+                else str(request.execution_id),
+                "observation_id": str(request.observation_result.observation_id),
+                "learning_id": str(result.learning_id),
+                "status": result.status.value,
+                "fingerprint": result.fingerprint,
+                "durable_reference": f"learning:{result.learning_id}",
+            },
+            metadata=EventMetadata(
+                correlation_id=request.correlation_id,
+                causation_id=request.observation_result.source_event_id,
+            ),
+            priority=EventPriority.NORMAL,
+        )
 
     def _idempotency_key(self, request: LearningRequest) -> str:
         payload = {

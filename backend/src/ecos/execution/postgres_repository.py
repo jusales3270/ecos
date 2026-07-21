@@ -16,12 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ecos.database import create_database_engine, create_session_factory
+from ecos.events import Event
 from ecos.execution.models import ExecutionResult
 from ecos.execution.repository import (
     ExecutionResultConflictError,
     ExecutionResultRepository,
     validate_execution_result_fingerprint,
+    validate_execution_terminal_event,
 )
+from ecos.outbox import append_outbox_event
 
 
 class Base(DeclarativeBase):
@@ -69,6 +72,8 @@ def _run[ResultT](coroutine: Coroutine[object, object, ResultT]) -> ResultT:
 class PostgresExecutionResultRepository(ExecutionResultRepository):
     """Persist the first complete result and reject every divergent reuse."""
 
+    supports_transactional_outbox = True
+
     def __init__(
         self,
         database_url: str | None = None,
@@ -103,9 +108,15 @@ class PostgresExecutionResultRepository(ExecutionResultRepository):
             return None if record is None else self._model(record)
 
     def save(self, result: ExecutionResult) -> ExecutionResult:
-        return _run(self._save(result))
+        return _run(self._save(result, event=None))
 
-    async def _save(self, result: ExecutionResult) -> ExecutionResult:
+    def save_terminal(self, result: ExecutionResult, event: Event) -> ExecutionResult:
+        validate_execution_terminal_event(result, event)
+        return _run(self._save(result, event=event))
+
+    async def _save(
+        self, result: ExecutionResult, *, event: Event | None
+    ) -> ExecutionResult:
         validate_execution_result_fingerprint(result)
         async with self._session_factory() as database:
             inserted = await database.scalar(
@@ -124,30 +135,39 @@ class PostgresExecutionResultRepository(ExecutionResultRepository):
                 .on_conflict_do_nothing(index_elements=["execution_id"])
                 .returning(ExecutionResultRecord.execution_id)
             )
-            await database.commit()
             if inserted is not None:
-                return result.model_copy(deep=True)
-            record = await database.scalar(
-                select(ExecutionResultRecord).where(
-                    ExecutionResultRecord.execution_id == result.execution_id
+                canonical = result.model_copy(deep=True)
+            else:
+                record = await database.scalar(
+                    select(ExecutionResultRecord).where(
+                        ExecutionResultRecord.execution_id == result.execution_id
+                    )
                 )
-            )
-            if record is None:
-                raise ExecutionResultConflictError(
-                    "execution result conflict could not be resolved safely"
+                if record is None:
+                    raise ExecutionResultConflictError(
+                        "execution result conflict could not be resolved safely"
+                    )
+                canonical = self._model(record)
+                if (
+                    record.organization_id != result.organization_id
+                    or record.session_id != result.session_id
+                    or record.plan_id != result.plan_id
+                    or record.correlation_id != result.correlation_id
+                    or record.fingerprint != result.fingerprint
+                ):
+                    raise ExecutionResultConflictError(
+                        "execution result identity or fingerprint conflict"
+                    )
+            if event is not None:
+                await append_outbox_event(
+                    database,
+                    event,
+                    aggregate_type="execution",
+                    aggregate_id=result.execution_id,
+                    execution_id=result.execution_id,
                 )
-            existing = self._model(record)
-            if (
-                record.organization_id != result.organization_id
-                or record.session_id != result.session_id
-                or record.plan_id != result.plan_id
-                or record.correlation_id != result.correlation_id
-                or record.fingerprint != result.fingerprint
-            ):
-                raise ExecutionResultConflictError(
-                    "execution result identity or fingerprint conflict"
-                )
-            return existing
+            await database.commit()
+            return canonical
 
     @staticmethod
     def _model(record: ExecutionResultRecord) -> ExecutionResult:

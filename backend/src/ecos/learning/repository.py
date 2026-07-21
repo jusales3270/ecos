@@ -9,9 +9,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from ecos.events import Event
 from ecos.memory import ValidatedMemoryWrite, validated_memory_fingerprint
+from ecos.outbox import (
+    InMemoryOutboxRepository,
+    message_from_event,
+    validate_terminal_event,
+)
 
-from .models import LearningResult, LearningValidation
+from .models import LearningResult, LearningStatus, LearningValidation
 
 
 class LearningRepositoryError(RuntimeError):
@@ -54,6 +60,8 @@ class LearningAcquisition(BaseModel):
 class LearningRepository(ABC):
     """Organization-scoped learning run persistence with exclusive claims."""
 
+    supports_transactional_outbox: bool = False
+
     @abstractmethod
     def get(
         self, organization_id: UUID, observation_id: UUID, policy_version: str
@@ -86,6 +94,17 @@ class LearningRepository(ABC):
     ) -> LearningResult:
         raise NotImplementedError
 
+    def complete_terminal(
+        self,
+        *,
+        claim: LearningClaim,
+        result: LearningResult,
+        validations: tuple[LearningValidation, ...],
+        event: Event,
+    ) -> LearningResult:
+        del event
+        return self.complete(claim=claim, result=result, validations=validations)
+
     @abstractmethod
     def stage_validated(
         self,
@@ -111,11 +130,14 @@ class InMemoryLearningRepository(LearningRepository):
         *,
         lease_duration: timedelta = timedelta(seconds=30),
         clock=lambda: datetime.now(UTC),
+        outbox: InMemoryOutboxRepository | None = None,
     ) -> None:
         self._lease_duration = lease_duration
         self._clock = clock
         self._runs: dict[tuple[UUID, UUID, str], dict[str, object]] = {}
         self._lock = RLock()
+        self._outbox = outbox
+        self.supports_transactional_outbox = outbox is not None
 
     def get(
         self, organization_id: UUID, observation_id: UUID, policy_version: str
@@ -236,6 +258,8 @@ class InMemoryLearningRepository(LearningRepository):
         validations: tuple[LearningValidation, ...],
     ) -> LearningResult:
         del validations
+        if result.status not in {LearningStatus.COMPLETED, LearningStatus.FAILED}:
+            raise LearningConflictError("learning completion requires terminal status")
         key = (claim.organization_id, claim.observation_id, claim.policy_version)
         with self._lock:
             run = self._runs.get(key)
@@ -253,6 +277,48 @@ class InMemoryLearningRepository(LearningRepository):
             run["staged"] = result.model_copy(deep=True)
             run["claim"] = current.model_copy(update={"version": current.version + 1})
             return result.model_copy(deep=True)
+
+    def complete_terminal(
+        self,
+        *,
+        claim: LearningClaim,
+        result: LearningResult,
+        validations: tuple[LearningValidation, ...],
+        event: Event,
+    ) -> LearningResult:
+        with self._lock:
+            validate_learning_terminal_event(result, event)
+            canonical = self.complete(
+                claim=claim, result=result, validations=validations
+            )
+            if self._outbox is not None:
+                self._outbox.enqueue(
+                    message_from_event(
+                        event,
+                        actor_id=None,
+                        aggregate_type="learning",
+                        aggregate_id=str(result.learning_id),
+                        execution_id=result.execution_id,
+                        observation_id=result.observation_id,
+                        learning_id=result.learning_id,
+                    )
+                )
+            return canonical
+
+
+def validate_learning_terminal_event(result: LearningResult, event: Event) -> None:
+    expected_type = (
+        "LEARNING_FAILED"
+        if result.status is LearningStatus.FAILED
+        else "LEARNING_COMPLETED"
+    )
+    validate_terminal_event(
+        event,
+        organization_id=result.organization_id,
+        session_id=result.session_id,
+        correlation_id=result.correlation_id,
+        event_type=expected_type,
+    )
 
 
 def _validate_write_against_result(

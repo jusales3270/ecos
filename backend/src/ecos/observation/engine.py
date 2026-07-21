@@ -41,6 +41,7 @@ from ecos.observation.repository import (
     InMemoryObservationRepository,
     ObservationRepository,
 )
+from ecos.outbox import terminal_event_id
 
 Clock = Callable[[], datetime]
 IdGenerator = Callable[[], UUID]
@@ -248,24 +249,26 @@ class ObservationEngine:
             safe_metadata=dict(request.safe_metadata),
         )
         if self._repository is not None and request.execution_id is not None:
-            result = self._repository.save(result)
+            terminal_type = (
+                EventType.OBSERVATION_FAILED
+                if result.status is ObservedOutcomeStatus.FAILED
+                else EventType.OBSERVATION_COMPLETED
+            )
+            event = self._terminal_event(request, terminal_type, result)
+            result = self._repository.save_terminal(result, event)
             if result.observation_id != observation_id:
                 self._idempotency_provider.put(key, fingerprint, result)
                 return result
+            if not self._repository.supports_transactional_outbox:
+                envelope = self._event_service.publish(event)
+                self._event_service.dispatch(envelope)
         self._idempotency_provider.put(key, fingerprint, result)
-        self._publish(
-            request,
-            EventType.OBSERVATION_COMPLETED,
-            {
-                "observation_id": str(result.observation_id),
-                "execution_id": None
-                if result.execution_id is None
-                else str(result.execution_id),
-                "status": result.status.value,
-                "fingerprint": result.fingerprint,
-                "durable_reference": f"observation:{result.observation_id}",
-            },
-        )
+        if request.execution_id is None:
+            self._publish(
+                request,
+                EventType.OBSERVATION_COMPLETED,
+                self._terminal_payload(result),
+            )
         return result
 
     def _validate_request(self, request: ObservationRequest) -> None:
@@ -794,6 +797,49 @@ class ObservationEngine:
             )
         )
         self._event_service.dispatch(envelope)
+
+    @staticmethod
+    def _terminal_payload(
+        result: ObservationResult,
+    ) -> dict[str, str | int | float | bool | None]:
+        return {
+            "observation_id": str(result.observation_id),
+            "execution_id": None
+            if result.execution_id is None
+            else str(result.execution_id),
+            "status": result.status.value,
+            "fingerprint": result.fingerprint,
+            "durable_reference": f"observation:{result.observation_id}",
+        }
+
+    def _terminal_event(
+        self,
+        request: ObservationRequest,
+        event_type: EventType,
+        result: ObservationResult,
+    ) -> Event:
+        return Event(
+            id=terminal_event_id(
+                organization_id=request.organization_id,
+                aggregate_type="observation",
+                aggregate_id=result.observation_id,
+                event_type=event_type.value,
+            ),
+            event_type=event_type,
+            source="observation",
+            session_id=request.session_id,
+            organization_id=request.organization_id,
+            payload=self._terminal_payload(result),
+            metadata=EventMetadata(
+                correlation_id=request.correlation_id,
+                causation_id=request.source_event_id,
+                attributes={
+                    "organization_id": str(request.organization_id),
+                    "plan_id": str(request.plan_id),
+                },
+            ),
+            priority=EventPriority.NORMAL,
+        )
 
     def _idempotency_key(self, request: ObservationRequest) -> str:
         window = (

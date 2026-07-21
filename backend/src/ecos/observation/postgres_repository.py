@@ -17,12 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ecos.database import create_database_engine, create_session_factory
+from ecos.events import Event
+from ecos.outbox import OutboxConflictError, OutboxRecord, append_outbox_event
 
 from .models import ObservationResult
 from .repository import (
     ObservationConflictError,
     ObservationRepository,
     _validate_compatible,
+    validate_observation_terminal_event,
 )
 
 
@@ -72,6 +75,8 @@ def _run[ResultT](coroutine: Coroutine[object, object, ResultT]) -> ResultT:
 class PostgresObservationRepository(ObservationRepository):
     """Persist the first observation and safely resolve concurrent inserts."""
 
+    supports_transactional_outbox = True
+
     def __init__(
         self,
         database_url: str | None = None,
@@ -105,9 +110,18 @@ class PostgresObservationRepository(ObservationRepository):
 
     def save(self, result: ObservationResult) -> ObservationResult:
         with self._sync_lock:
-            return _run(self._save(result))
+            return _run(self._save(result, event=None))
 
-    async def _save(self, result: ObservationResult) -> ObservationResult:
+    def save_terminal(
+        self, result: ObservationResult, event: Event
+    ) -> ObservationResult:
+        validate_observation_terminal_event(result, event)
+        with self._sync_lock:
+            return _run(self._save(result, event=event))
+
+    async def _save(
+        self, result: ObservationResult, *, event: Event | None
+    ) -> ObservationResult:
         if result.execution_id is None:
             raise ObservationConflictError(
                 "canonical observation requires execution_id"
@@ -131,21 +145,43 @@ class PostgresObservationRepository(ObservationRepository):
                 .on_conflict_do_nothing()
                 .returning(ObservationResultRecord.observation_id)
             )
-            await database.commit()
             if inserted is not None:
-                return result.model_copy(deep=True)
-            record = await database.scalar(
-                select(ObservationResultRecord).where(
-                    ObservationResultRecord.execution_id == result.execution_id,
+                canonical = result.model_copy(deep=True)
+            else:
+                record = await database.scalar(
+                    select(ObservationResultRecord).where(
+                        ObservationResultRecord.execution_id == result.execution_id,
+                    )
                 )
-            )
-            if record is None:
-                raise ObservationConflictError(
-                    "observation conflict could not be resolved"
+                if record is None:
+                    raise ObservationConflictError(
+                        "observation conflict could not be resolved"
+                    )
+                canonical = self._model(record)
+                _validate_compatible(canonical, result)
+            if event is not None and inserted is not None:
+                await append_outbox_event(
+                    database,
+                    event,
+                    aggregate_type="observation",
+                    aggregate_id=result.observation_id,
+                    execution_id=result.execution_id,
+                    observation_id=result.observation_id,
                 )
-            existing = self._model(record)
-            _validate_compatible(existing, result)
-            return existing
+            elif event is not None:
+                existing_event = await database.scalar(
+                    select(OutboxRecord).where(
+                        OutboxRecord.aggregate_type == "observation",
+                        OutboxRecord.aggregate_id == str(canonical.observation_id),
+                        OutboxRecord.organization_id == canonical.organization_id,
+                    )
+                )
+                if existing_event is None:
+                    raise OutboxConflictError(
+                        "canonical observation is missing its terminal outbox event"
+                    )
+            await database.commit()
+            return canonical
 
     @staticmethod
     def _model(record: ObservationResultRecord) -> ObservationResult:
