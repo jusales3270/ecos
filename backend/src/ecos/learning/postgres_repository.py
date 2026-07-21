@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ecos.database import create_database_engine, create_session_factory
+from ecos.memory import ValidatedMemoryWrite
 
 from .models import LearningResult, LearningValidation
 from .repository import (
@@ -34,6 +35,7 @@ from .repository import (
     LearningClaimUnavailableError,
     LearningConflictError,
     LearningRepository,
+    _validate_write_against_result,
 )
 
 
@@ -238,7 +240,71 @@ class PostgresLearningRepository(LearningRepository):
                 record.version += 1
                 record.updated_at = now
                 await database.commit()
-            return LearningAcquisition(claim=self._claim(record))
+            staged = self._model(record) if record.status == "validated" else None
+            return LearningAcquisition(claim=self._claim(record), staged_result=staged)
+
+    def stage_validated(
+        self,
+        *,
+        claim: LearningClaim,
+        result: LearningResult,
+        validations: tuple[LearningValidation, ...],
+    ) -> LearningResult:
+        with self._sync_lock:
+            return _run(self._stage_validated(claim, result, validations))
+
+    async def _stage_validated(
+        self,
+        claim: LearningClaim,
+        result: LearningResult,
+        validations: tuple[LearningValidation, ...],
+    ) -> LearningResult:
+        now = self._clock()
+        async with self._session_factory() as database:
+            record = await database.scalar(
+                select(LearningRunRecord)
+                .where(
+                    LearningRunRecord.learning_id == claim.learning_id,
+                    LearningRunRecord.organization_id == claim.organization_id,
+                )
+                .with_for_update()
+            )
+            if (
+                record is None
+                or record.claim_owner != claim.owner
+                or record.version != claim.version
+            ):
+                raise LearningConflictError("stale or lost learning claim")
+            if record.status == "validated":
+                existing = self._model(record)
+                if existing.fingerprint != result.fingerprint:
+                    raise LearningConflictError("learning fingerprint conflict")
+                return existing
+            if record.status != "processing":
+                raise LearningConflictError("learning cannot be staged")
+            record.status = "validated"
+            record.payload = result.model_dump(mode="json")
+            record.updated_at = now
+            await self._persist_children(database, result, validations, now)
+            await database.commit()
+        return result.model_copy(deep=True)
+
+    def validate_memory_write(self, write: ValidatedMemoryWrite) -> None:
+        with self._sync_lock:
+            _run(self._validate_memory_write(write))
+
+    async def _validate_memory_write(self, write: ValidatedMemoryWrite) -> None:
+        async with self._session_factory() as database:
+            record = await database.scalar(
+                select(LearningRunRecord).where(
+                    LearningRunRecord.learning_id == write.learning_id,
+                    LearningRunRecord.organization_id == write.organization_id,
+                    LearningRunRecord.status.in_(("validated", "completed")),
+                )
+            )
+        if record is None:
+            raise LearningConflictError("canonical validated learning not found")
+        _validate_write_against_result(write, self._model(record))
 
     def complete(
         self,
@@ -257,7 +323,6 @@ class PostgresLearningRepository(LearningRepository):
         validations: tuple[LearningValidation, ...],
     ) -> LearningResult:
         now = self._clock()
-        validation_by_id = {item.learning_candidate_id: item for item in validations}
         async with self._session_factory() as database:
             changed = await database.scalar(
                 update(LearningRunRecord)
@@ -266,7 +331,7 @@ class PostgresLearningRepository(LearningRepository):
                     LearningRunRecord.organization_id == claim.organization_id,
                     LearningRunRecord.version == claim.version,
                     LearningRunRecord.claim_owner == claim.owner,
-                    LearningRunRecord.status == "processing",
+                    LearningRunRecord.status == "validated",
                 )
                 .values(
                     status="completed",
@@ -280,46 +345,52 @@ class PostgresLearningRepository(LearningRepository):
             )
             if changed is None:
                 raise LearningConflictError("stale or lost learning claim")
-            for candidate in result.candidates:
-                validation = validation_by_id[candidate.learning_candidate_id]
-                reason = ",".join(validation.reason_codes)
-                await database.execute(
-                    insert(LearningCandidateRecord)
-                    .values(
-                        candidate_id=candidate.learning_candidate_id,
-                        learning_id=result.learning_id,
-                        candidate_type=candidate.category.value,
-                        assertion=candidate.statement,
-                        confidence=candidate.confidence,
-                        validation_status=validation.outcome.value,
-                        validation_reason=reason,
-                        evidence=list(candidate.evidence_references),
-                        requires_human_review=validation.human_review_required,
-                        payload=candidate.model_dump(mode="json"),
-                        created_at=now,
-                    )
-                    .on_conflict_do_nothing(
-                        index_elements=["learning_id", "candidate_id"]
-                    )
-                )
-                await database.execute(
-                    insert(LearningValidationRecord)
-                    .values(
-                        candidate_id=candidate.learning_candidate_id,
-                        learning_id=result.learning_id,
-                        status=validation.outcome.value,
-                        reason=reason,
-                        evidence=list(candidate.evidence_references),
-                        requires_human_review=validation.human_review_required,
-                        payload=validation.model_dump(mode="json"),
-                        created_at=now,
-                    )
-                    .on_conflict_do_nothing(
-                        index_elements=["learning_id", "candidate_id"]
-                    )
-                )
+            await self._persist_children(database, result, validations, now)
             await database.commit()
             return result.model_copy(deep=True)
+
+    @staticmethod
+    async def _persist_children(
+        database: AsyncSession,
+        result: LearningResult,
+        validations: tuple[LearningValidation, ...],
+        now: datetime,
+    ) -> None:
+        validation_by_id = {item.learning_candidate_id: item for item in validations}
+        for candidate in result.candidates:
+            validation = validation_by_id[candidate.learning_candidate_id]
+            reason = ",".join(validation.reason_codes)
+            await database.execute(
+                insert(LearningCandidateRecord)
+                .values(
+                    candidate_id=candidate.learning_candidate_id,
+                    learning_id=result.learning_id,
+                    candidate_type=candidate.category.value,
+                    assertion=candidate.statement,
+                    confidence=candidate.confidence,
+                    validation_status=validation.outcome.value,
+                    validation_reason=reason,
+                    evidence=list(candidate.evidence_references),
+                    requires_human_review=validation.human_review_required,
+                    payload=candidate.model_dump(mode="json"),
+                    created_at=now,
+                )
+                .on_conflict_do_nothing(index_elements=["learning_id", "candidate_id"])
+            )
+            await database.execute(
+                insert(LearningValidationRecord)
+                .values(
+                    candidate_id=candidate.learning_candidate_id,
+                    learning_id=result.learning_id,
+                    status=validation.outcome.value,
+                    reason=reason,
+                    evidence=list(candidate.evidence_references),
+                    requires_human_review=validation.human_review_required,
+                    payload=validation.model_dump(mode="json"),
+                    created_at=now,
+                )
+                .on_conflict_do_nothing(index_elements=["learning_id", "candidate_id"])
+            )
 
     @staticmethod
     def _validate_scope(record: LearningRunRecord, values: dict[str, Any]) -> None:

@@ -1,8 +1,10 @@
 """Pydantic models for the ECOS Memory Engine architecture."""
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -88,6 +90,21 @@ class MemoryObject(MemoryModel):
         max_length=500,
         description="Origin of the memory object.",
     )
+    session_id: UUID | None = None
+    execution_id: UUID | None = None
+    correlation_id: UUID | None = None
+    observation_id: UUID | None = None
+    learning_id: UUID | None = None
+    learning_candidate_id: UUID | None = None
+    proposal_id: UUID | None = None
+    policy_version: str | None = Field(default=None, max_length=100)
+    validation_status: str | None = Field(default=None, max_length=40)
+    evidence_references: list[str] | None = None
+    source_references: list[str] | None = None
+    validated_write_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64
+    )
+    version: int = Field(default=1, ge=1)
 
     @field_validator("tags")
     @classmethod
@@ -98,6 +115,89 @@ class MemoryObject(MemoryModel):
             msg = "tags cannot contain blank values"
             raise ValueError(msg)
         return normalized
+
+
+class ValidatedMemoryWrite(BaseModel):
+    """Complete immutable input for one validated Learning memory write."""
+
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
+    organization_id: UUID
+    session_id: UUID
+    execution_id: UUID
+    correlation_id: UUID
+    observation_id: UUID
+    learning_id: UUID
+    candidate_id: UUID
+    proposal_id: UUID
+    policy_version: str = Field(min_length=1, max_length=100)
+    validation_status: str = Field(min_length=1, max_length=40)
+    memory_type: MemoryType
+    content: dict[str, Any]
+    tags: tuple[str, ...]
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_references: tuple[str, ...]
+    source_references: tuple[str, ...]
+    fingerprint: str = Field(min_length=64, max_length=64)
+
+    @field_validator("validation_status")
+    @classmethod
+    def require_validated(cls, value: str) -> str:
+        if value.lower() != "validated":
+            raise ValueError("only validated learning may be written to memory")
+        return value.lower()
+
+
+class ValidatedMemoryStoreResult(BaseModel):
+    """Result of an idempotent validated write, including creation ownership."""
+
+    model_config = ConfigDict(frozen=True)
+
+    memory: MemoryObject
+    created: bool
+
+
+def validated_memory_fingerprint(
+    *,
+    organization_id: UUID,
+    session_id: UUID,
+    execution_id: UUID,
+    correlation_id: UUID,
+    observation_id: UUID,
+    learning_id: UUID,
+    candidate_id: UUID,
+    proposal_id: UUID,
+    policy_version: str,
+    validation_status: str,
+    memory_type: MemoryType,
+    content: dict[str, Any],
+    tags: tuple[str, ...],
+    confidence: float,
+    evidence_references: tuple[str, ...],
+    source_references: tuple[str, ...],
+) -> str:
+    """Return the canonical fingerprint for a validated write."""
+    payload = {
+        "organization_id": str(organization_id),
+        "session_id": str(session_id),
+        "execution_id": str(execution_id),
+        "correlation_id": str(correlation_id),
+        "observation_id": str(observation_id),
+        "learning_id": str(learning_id),
+        "candidate_id": str(candidate_id),
+        "proposal_id": str(proposal_id),
+        "policy_version": policy_version,
+        "validation_status": validation_status.lower(),
+        "memory_type": memory_type.value,
+        "content": content,
+        "tags": tags,
+        "confidence": confidence,
+        "evidence_references": evidence_references,
+        "source_references": source_references,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 class MemoryReference(MemoryModel):

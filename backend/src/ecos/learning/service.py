@@ -7,7 +7,14 @@ from datetime import datetime
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from ecos.events import Event, EventMetadata, EventPriority, EventService, EventType
-from ecos.memory import MemoryObject, MemoryService, MemoryType
+from ecos.memory import (
+    MemoryObject,
+    MemoryService,
+    MemoryType,
+    ValidatedMemoryStoreResult,
+    ValidatedMemoryWrite,
+    validated_memory_fingerprint,
+)
 from ecos.observation import ObservedOutcomeStatus
 from ecos.observation.repository import ObservationConflictError, ObservationRepository
 
@@ -93,6 +100,7 @@ class LearningService:
         self._id_generator = id_generator or uuid4
         self._config = config or LearningConfig()
         self._repository = repository or InMemoryLearningRepository(clock=self._clock)
+        self._memory_service.configure_validated_authority(self._repository)
         self._observation_repository = observation_repository
 
     def learn(self, candidate: LearningObject) -> MemoryObject | None:
@@ -170,6 +178,8 @@ class LearningService:
         claim = acquisition.claim
         if claim is None:
             raise RuntimeError("learning acquisition returned no claim or result")
+        if acquisition.staged_result is not None:
+            return self._complete_staged(request, claim, acquisition.staged_result)
         started_at = self._clock()
         self._publish_learning(request, EventType.LEARNING_STARTED, {})
         candidates = self._candidates(request)
@@ -250,13 +260,6 @@ class LearningService:
                 EventType.MEMORY_UPDATE_PROPOSED,
                 {"proposal_id": str(proposal.proposal_id)},
             )
-        stored = tuple(self._store_proposal(proposal) for proposal in proposals)
-        for memory_id in stored:
-            self._publish_learning(
-                request,
-                EventType.MEMORY_IMPROVED,
-                {"memory_id": memory_id},
-            )
         evidence_references = tuple(
             sorted(
                 {
@@ -267,7 +270,7 @@ class LearningService:
             )
         )
         completed_at = self._clock()
-        result = LearningResult(
+        staged = LearningResult(
             learning_id=claim.learning_id,
             learning_request_id=request.learning_request_id,
             organization_id=request.organization_id,
@@ -278,7 +281,7 @@ class LearningService:
             observation_id=request.observation_result.observation_id,
             policy_version=policy_version,
             fingerprint=fingerprint,
-            status=LearningStatus.COMPLETED,
+            status=LearningStatus.VALIDATED,
             candidates=candidates,
             validations=validations,
             validated_candidates=validated_candidates,
@@ -287,7 +290,7 @@ class LearningService:
             pattern_signals=patterns,
             confidence_calibrations=calibrations,
             memory_update_proposals=proposals,
-            stored_memory_references=stored,
+            stored_memory_references=(),
             evidence_references=evidence_references,
             validation_summary={
                 "validated": len(validated_candidates),
@@ -297,16 +300,76 @@ class LearningService:
             started_at=started_at,
             completed_at=completed_at,
             duration=max((completed_at - started_at).total_seconds(), 0.0),
-            reason_codes=("learning_completed",),
+            reason_codes=("learning_validated",),
             warnings=request.observation_result.warnings,
             safe_metadata=dict(request.safe_metadata),
         )
-        result = self._repository.complete(
+        staged = self._repository.stage_validated(
             claim=claim,
-            result=result,
+            result=staged,
             validations=validations,
         )
-        self._idempotency_provider.put(key, fingerprint, result)
+        return self._complete_staged(request, claim, staged, key=key)
+
+    def _complete_staged(
+        self,
+        request: LearningRequest,
+        claim: object,
+        staged: LearningResult,
+        *,
+        key: str | None = None,
+    ) -> LearningResult:
+        from .repository import LearningClaim
+
+        if not isinstance(claim, LearningClaim):
+            raise TypeError("claim must be a LearningClaim")
+        stored: list[str] = []
+        for proposal in staged.memory_update_proposals:
+            stored_result = self._store_proposal(staged, proposal)
+            stored.append(str(stored_result.memory.id))
+            if stored_result.created:
+                self._event_service.dispatch(
+                    self._event_service.publish(
+                        Event(
+                            event_type=EventType.MEMORY_UPDATED,
+                            source="learning",
+                            session_id=staged.session_id,
+                            organization_id=staged.organization_id,
+                            payload={
+                                "organization_id": str(staged.organization_id),
+                                "memory_id": str(stored_result.memory.id),
+                                "proposal_id": str(proposal.proposal_id),
+                            },
+                            metadata=EventMetadata(
+                                correlation_id=staged.correlation_id
+                            ),
+                            priority=EventPriority.NORMAL,
+                        )
+                    )
+                )
+                self._publish_learning(
+                    request,
+                    EventType.MEMORY_IMPROVED,
+                    {"memory_id": str(stored_result.memory.id)},
+                )
+        completed_at = self._clock()
+        result = staged.model_copy(
+            update={
+                "status": LearningStatus.COMPLETED,
+                "stored_memory_references": tuple(stored),
+                "completed_at": completed_at,
+                "duration": max(
+                    (completed_at - staged.started_at).total_seconds(), 0.0
+                ),
+                "reason_codes": ("learning_completed",),
+            }
+        )
+        result = self._repository.complete(
+            claim=claim, result=result, validations=staged.validations
+        )
+        self._idempotency_provider.put(
+            key or self._idempotency_key(request), result.fingerprint, result
+        )
         self._publish_learning(
             request,
             EventType.LEARNING_COMPLETED,
@@ -470,6 +533,8 @@ class LearningService:
         quality = request.observation_result.quality.evidence_quality_score
         if not self._execution_succeeded(request) and self._is_positive(candidate):
             outcome = LearningValidationOutcome.POLICY_BLOCKED
+        elif self._is_inconclusive(candidate):
+            outcome = LearningValidationOutcome.INSUFFICIENT_EVIDENCE
         elif self._policy_provider.blocks(candidate):
             outcome = LearningValidationOutcome.POLICY_BLOCKED
         elif self._policy_provider.requires_human_review(candidate):
@@ -604,37 +669,46 @@ class LearningService:
             reason_codes=("validated_memory_update_proposal",),
         )
 
-    def _store_proposal(self, proposal: MemoryUpdateProposal) -> str:
-        title = f"Validated learning {proposal.learning_candidate_id}"
-        description = json.dumps(proposal.content, sort_keys=True, default=str)
-        memory = self._memory_service.store(
-            MemoryObject(
-                organization_id=proposal.organization_id,
-                type=proposal.memory_type,
-                title=title[:200],
-                description=description[:2000],
-                tags=["learning", "validated", f"v{proposal.version}"],
-                confidence=proposal.confidence,
-                source="learning",
-            )
-        )
-        self._event_service.dispatch(
-            self._event_service.publish(
-                Event(
-                    event_type=EventType.MEMORY_UPDATED,
-                    source="learning",
-                    session_id=proposal.session_id,
+    def _store_proposal(
+        self, result: LearningResult, proposal: MemoryUpdateProposal
+    ) -> ValidatedMemoryStoreResult:
+        if result.execution_id is None:
+            memory = self._memory_service.store(
+                MemoryObject(
                     organization_id=proposal.organization_id,
-                    payload={
-                        "organization_id": str(proposal.organization_id),
-                        "memory_id": str(memory.id),
-                    },
-                    metadata=EventMetadata(correlation_id=proposal.session_id),
-                    priority=EventPriority.NORMAL,
+                    type=proposal.memory_type,
+                    title=f"Validated learning {proposal.learning_candidate_id}"[:200],
+                    description=json.dumps(
+                        proposal.content, sort_keys=True, default=str
+                    )[:2000],
+                    tags=["learning", "validated", f"v{proposal.version}"],
+                    confidence=proposal.confidence,
+                    source="learning",
                 )
             )
+            return ValidatedMemoryStoreResult(memory=memory, created=True)
+        values = {
+            "organization_id": result.organization_id,
+            "session_id": result.session_id,
+            "execution_id": result.execution_id,
+            "correlation_id": result.correlation_id,
+            "observation_id": result.observation_id,
+            "learning_id": result.learning_id,
+            "candidate_id": proposal.learning_candidate_id,
+            "proposal_id": proposal.proposal_id,
+            "policy_version": result.policy_version,
+            "validation_status": proposal.validation_status.value,
+            "memory_type": proposal.memory_type,
+            "content": proposal.content,
+            "tags": ("learning", "validated", f"v{proposal.version}"),
+            "confidence": proposal.confidence,
+            "evidence_references": proposal.evidence_references,
+            "source_references": proposal.source_references,
+        }
+        write = ValidatedMemoryWrite(
+            **values, fingerprint=validated_memory_fingerprint(**values)
         )
-        return str(memory.id)
+        return self._memory_service.store_validated(write)
 
     def _publish_learning(
         self,
@@ -742,6 +816,15 @@ class LearningService:
             token in statement_type or token in outcome_status
             for token in positive_tokens
         )
+
+    @staticmethod
+    def _is_inconclusive(candidate: LearningCandidate) -> bool:
+        statement_type = str(candidate.statement.get("type", "")).lower()
+        outcome_status = str(candidate.statement.get("outcome_status", "")).lower()
+        return statement_type == "data_insufficient" or outcome_status in {
+            "inconclusive",
+            "not_observed",
+        }
 
     def _candidate_signature(self, candidate: LearningCandidate) -> str:
         payload = {

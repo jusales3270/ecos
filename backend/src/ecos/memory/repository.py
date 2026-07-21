@@ -3,7 +3,16 @@
 from abc import ABC, abstractmethod
 from uuid import UUID
 
-from ecos.memory.models import MemoryObject, MemoryType
+from ecos.memory.models import (
+    MemoryObject,
+    MemoryType,
+    ValidatedMemoryStoreResult,
+    ValidatedMemoryWrite,
+)
+
+
+class ValidatedMemoryConflictError(RuntimeError):
+    """Raised when a proposal is replayed with divergent provenance."""
 
 
 class MemoryRepository(ABC):
@@ -12,6 +21,12 @@ class MemoryRepository(ABC):
     @abstractmethod
     def store(self, memory: MemoryObject) -> MemoryObject:
         """Store a memory object."""
+        raise NotImplementedError
+
+    def store_validated(
+        self, write: ValidatedMemoryWrite
+    ) -> ValidatedMemoryStoreResult:
+        """Atomically create or reuse one validated Learning memory."""
         raise NotImplementedError
 
     @abstractmethod
