@@ -34,7 +34,14 @@ from ecos.decision import (
 )
 from ecos.domain import Objective
 from ecos.events import Event, EventBus, EventEnvelope, EventSubscription
-from ecos.memory import MemoryObject, MemoryRepository, MemoryType
+from ecos.memory import (
+    MemoryObject,
+    MemoryRepository,
+    MemoryType,
+    ValidatedMemoryConflictError,
+    ValidatedMemoryStoreResult,
+    ValidatedMemoryWrite,
+)
 from ecos.orchestrator import (
     EngineExecution,
     ExecutionPlan,
@@ -103,11 +110,50 @@ class FakeMemoryRepository(MemoryRepository):
     def __init__(self) -> None:
         """Initialize empty memory storage."""
         self.memories: dict[UUID, MemoryObject] = {}
+        self._validated: dict[tuple[UUID, UUID], UUID] = {}
+        self._lock = RLock()
 
     def store(self, memory: MemoryObject) -> MemoryObject:
         """Store a memory object in memory."""
         self.memories[memory.id] = memory
         return memory
+
+    def store_validated(
+        self, write: ValidatedMemoryWrite
+    ) -> ValidatedMemoryStoreResult:
+        """Atomically create or reuse a validated memory in process."""
+        key = (write.organization_id, write.proposal_id)
+        with self._lock:
+            memory_id = self._validated.get(key)
+            if memory_id is not None:
+                memory = self.memories[memory_id]
+                if memory.validated_write_fingerprint != write.fingerprint:
+                    raise ValidatedMemoryConflictError("validated proposal conflict")
+                return ValidatedMemoryStoreResult(memory=memory, created=False)
+            memory = MemoryObject(
+                organization_id=write.organization_id,
+                type=write.memory_type,
+                title=f"Validated learning {write.candidate_id}"[:200],
+                description=str(write.content)[:2000],
+                tags=list(write.tags),
+                confidence=write.confidence,
+                source="learning",
+                session_id=write.session_id,
+                execution_id=write.execution_id,
+                correlation_id=write.correlation_id,
+                observation_id=write.observation_id,
+                learning_id=write.learning_id,
+                learning_candidate_id=write.candidate_id,
+                proposal_id=write.proposal_id,
+                policy_version=write.policy_version,
+                validation_status=write.validation_status,
+                evidence_references=list(write.evidence_references),
+                source_references=list(write.source_references),
+                validated_write_fingerprint=write.fingerprint,
+            )
+            self.memories[memory.id] = memory
+            self._validated[key] = memory.id
+            return ValidatedMemoryStoreResult(memory=memory, created=True)
 
     def get(self, memory_id: UUID) -> MemoryObject | None:
         """Return a stored memory object by id."""
