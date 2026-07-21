@@ -27,6 +27,7 @@ class OperationalSessionStatus(StrEnum):
     CREATED = "created"
     PROCESSING = "processing"
     WAITING_APPROVAL = "waiting_approval"
+    WAITING_HUMAN_REVIEW = "waiting_human_review"
     APPROVED = "approved"
     REJECTED = "rejected"
     EXECUTING = "executing"
@@ -112,7 +113,14 @@ class ApprovalView(OperationalModel):
     approvals_recorded: int = Field(default=0, ge=0)
     expires_at: datetime | None = None
     runtime_status: (
-        Literal["waiting_approval", "executing", "completed", "error"] | None
+        Literal[
+            "waiting_approval",
+            "waiting_human_review",
+            "executing",
+            "completed",
+            "error",
+        ]
+        | None
     ) = None
     checkpoint_version: int | None = Field(default=None, ge=1)
     error_code: str | None = None
@@ -209,6 +217,7 @@ class OperationalMetrics(OperationalModel):
 SaraRuntimeState = Literal[
     "thinking",
     "waiting_approval",
+    "waiting_human_review",
     "executing",
     "completed",
     "error",

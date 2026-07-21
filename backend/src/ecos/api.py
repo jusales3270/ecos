@@ -12,11 +12,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ecos.core import Container, settings
+from ecos.learning import LearningConflictError, LearningReviewStatus
 from ecos.operational import (
     OperationalService,
     SaraInteractionView,
     SaraSessionStateView,
 )
+from ecos.operational.exceptions import OperationalConflictError
 from ecos.security import (
     AuthenticatedPrincipal,
     AuthenticationError,
@@ -84,6 +86,13 @@ class ApprovalRejectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(min_length=1, max_length=1000)
+
+
+class LearningReviewRequest(BaseModel):
+    """Mandatory justification for a governed learning candidate decision."""
+
+    model_config = ConfigDict(extra="forbid")
+    justification: str = Field(min_length=1, max_length=1000)
 
 
 def container(request: Request) -> Container:
@@ -265,6 +274,39 @@ def session_detail(
     return ops.get_session(principal_, session_id)
 
 
+@router.get("/sessions/{session_id}/cognitive")
+def cognitive_session_detail(
+    session_id: UUID,
+    principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
+    ops: Annotated[OperationalService, Depends(operational)],
+    container_: Annotated[Container, Depends(container)],
+) -> dict[str, Any]:
+    """Return the typed artifacts persisted by the canonical runtime."""
+    ops.get_session(principal_, session_id)
+    checkpoint = container_.authenticated_runtime_service.get_checkpoint(
+        principal_.organization_id, session_id
+    )
+    if checkpoint is None:
+        return {
+            "session_id": str(session_id),
+            "runtime_status": "not_started",
+            "artifacts": {},
+        }
+    artifacts: dict[str, Any] = {}
+    for stage in checkpoint.stage_results:
+        value = container_.runtime_artifact_codec.decode(stage.output)
+        artifacts[stage.engine] = (
+            value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+        )
+    return {
+        "session_id": str(session_id),
+        "runtime_status": checkpoint.status.value,
+        "checkpoint_version": checkpoint.version,
+        "planning": checkpoint.cognitive_plan.model_dump(mode="json"),
+        "artifacts": artifacts,
+    }
+
+
 @router.post("/sessions/{session_id}/start")
 def start_cognition(
     session_id: UUID,
@@ -393,8 +435,24 @@ def reject(
 def executions(
     principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
     ops: Annotated[OperationalService, Depends(operational)],
+    container_: Annotated[Container, Depends(container)],
+    session_id: UUID | None = None,
 ):
-    return ops.list_executions(principal_)
+    principal_.require_permission(Permission.READ_SESSIONS)
+    if session_id is not None:
+        ops.get_session(principal_, session_id)
+    session_ids = (
+        [session_id]
+        if session_id is not None
+        else [item.session_id for item in ops.list_sessions(principal_)]
+    )
+    return [
+        item
+        for scoped_id in session_ids
+        for item in container_.execution_result_repository.list_by_session(
+            principal_.organization_id, scoped_id
+        )
+    ]
 
 
 @router.post("/executions/{execution_id}/start")
@@ -415,12 +473,23 @@ def start_execution(
 def observations(
     principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
     ops: Annotated[OperationalService, Depends(operational)],
+    container_: Annotated[Container, Depends(container)],
+    session_id: UUID | None = None,
 ):
     principal_.require_permission(Permission.READ_OBSERVATION)
+    if session_id is not None:
+        ops.get_session(principal_, session_id)
+    session_ids = (
+        [session_id]
+        if session_id is not None
+        else [item.session_id for item in ops.list_sessions(principal_)]
+    )
     return [
-        item.execution
-        for item in ops.list_sessions(principal_)
-        if item.execution is not None and item.execution.observations
+        item
+        for scoped_id in session_ids
+        for item in container_.observation_repository.list_by_session(
+            principal_.organization_id, scoped_id
+        )
     ]
 
 
@@ -428,12 +497,126 @@ def observations(
 def learning(
     principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
     ops: Annotated[OperationalService, Depends(operational)],
+    container_: Annotated[Container, Depends(container)],
+    session_id: UUID | None = None,
 ):
     principal_.require_permission(Permission.READ_LEARNING)
+    if session_id is not None:
+        ops.get_session(principal_, session_id)
+    session_ids = (
+        [session_id]
+        if session_id is not None
+        else [item.session_id for item in ops.list_sessions(principal_)]
+    )
     return [
-        item.execution
-        for item in ops.list_sessions(principal_)
-        if item.execution is not None and item.execution.learning
+        item
+        for scoped_id in session_ids
+        for item in container_.learning_repository.list_by_session(
+            principal_.organization_id, scoped_id
+        )
+    ]
+
+
+@router.get("/learning/reviews")
+def learning_reviews(
+    principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
+    container_: Annotated[Container, Depends(container)],
+    ops: Annotated[OperationalService, Depends(operational)],
+    session_id: UUID | None = None,
+    status: LearningReviewStatus | None = None,
+):
+    principal_.require_permission(Permission.READ_LEARNING)
+    if session_id is not None:
+        ops.get_session(principal_, session_id)
+    return container_.learning_repository.list_reviews(
+        principal_.organization_id, session_id=session_id, status=status
+    )
+
+
+def _decide_learning_review(
+    *,
+    candidate_id: UUID,
+    approve: bool,
+    payload: LearningReviewRequest,
+    request: Request,
+    principal_: AuthenticatedPrincipal,
+    container_: Container,
+):
+    principal_.require_permission(Permission.APPROVE_DECISION)
+    key = request.headers.get("Idempotency-Key")
+    if not key:
+        raise LearningConflictError("Idempotency-Key is required")
+    try:
+        review, result = container_.learning_service.review_candidate(
+            organization_id=principal_.organization_id,
+            candidate_id=candidate_id,
+            actor_id=principal_.user_id,
+            approve=approve,
+            justification=payload.justification,
+            idempotency_key=key,
+        )
+    except LearningConflictError as error:
+        raise OperationalConflictError(str(error)) from None
+    if result.status.value == "completed":
+        container_.authenticated_runtime_service.complete_learning_review(
+            principal_.organization_id, result.session_id, result
+        )
+    return {"review": review, "learning": result}
+
+
+@router.post("/learning/reviews/{candidate_id}/approve")
+def approve_learning_review(
+    candidate_id: UUID,
+    payload: LearningReviewRequest,
+    request: Request,
+    principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
+    container_: Annotated[Container, Depends(container)],
+):
+    return _decide_learning_review(
+        candidate_id=candidate_id,
+        approve=True,
+        payload=payload,
+        request=request,
+        principal_=principal_,
+        container_=container_,
+    )
+
+
+@router.post("/learning/reviews/{candidate_id}/reject")
+def reject_learning_review(
+    candidate_id: UUID,
+    payload: LearningReviewRequest,
+    request: Request,
+    principal_: Annotated[AuthenticatedPrincipal, Depends(mutable_principal)],
+    container_: Annotated[Container, Depends(container)],
+):
+    return _decide_learning_review(
+        candidate_id=candidate_id,
+        approve=False,
+        payload=payload,
+        request=request,
+        principal_=principal_,
+        container_=container_,
+    )
+
+
+@router.get("/memories")
+def memories(
+    principal_: Annotated[AuthenticatedPrincipal, Depends(principal)],
+    container_: Annotated[Container, Depends(container)],
+    ops: Annotated[OperationalService, Depends(operational)],
+    session_id: UUID | None = None,
+):
+    if session_id is not None:
+        ops.get_session(principal_, session_id)
+    values = container_.tenant_memory_service.list(
+        principal_, tags=["learning", "validated"]
+    )
+    return [
+        item
+        for item in values
+        if item.validation_status == "validated"
+        and (session_id is None or item.session_id == session_id)
     ]
 
 

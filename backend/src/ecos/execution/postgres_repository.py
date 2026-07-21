@@ -107,6 +107,27 @@ class PostgresExecutionResultRepository(ExecutionResultRepository):
             )
             return None if record is None else self._model(record)
 
+    def list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[ExecutionResult]:
+        return _run(self._list_by_session(organization_id, session_id))
+
+    async def _list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[ExecutionResult]:
+        async with self._session_factory() as database:
+            records = (
+                await database.scalars(
+                    select(ExecutionResultRecord)
+                    .where(
+                        ExecutionResultRecord.organization_id == organization_id,
+                        ExecutionResultRecord.session_id == session_id,
+                    )
+                    .order_by(ExecutionResultRecord.created_at)
+                )
+            ).all()
+        return [self._model(record) for record in records]
+
     def save(self, result: ExecutionResult) -> ExecutionResult:
         return _run(self._save(result, event=None))
 

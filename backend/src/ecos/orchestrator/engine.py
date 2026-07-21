@@ -236,12 +236,18 @@ class Orchestrator:
         self._timeline(state, TimelineEntryType.COMPLETION, terminal_status)
         terminal_event = {
             PipelineExecutionStatus.COMPLETED: EventType.PIPELINE_COMPLETED,
+            PipelineExecutionStatus.WAITING_HUMAN_REVIEW: (
+                EventType.PIPELINE_WAITING_HUMAN_REVIEW
+            ),
             PipelineExecutionStatus.FAILED: EventType.PIPELINE_FAILED,
             PipelineExecutionStatus.CANCELLED: EventType.PIPELINE_CANCELLED,
         }[pipeline_status]
         self._publish(state.orchestration_input, terminal_event)
         session_status = {
             PipelineExecutionStatus.COMPLETED: SessionLifecycleStatus.COMPLETED,
+            PipelineExecutionStatus.WAITING_HUMAN_REVIEW: (
+                SessionLifecycleStatus.PAUSED
+            ),
             PipelineExecutionStatus.FAILED: SessionLifecycleStatus.FAILED,
             PipelineExecutionStatus.CANCELLED: SessionLifecycleStatus.CANCELLED,
         }[pipeline_status]
@@ -794,6 +800,20 @@ class Orchestrator:
 
     @staticmethod
     def _post_execution_status(state: "_RuntimeState") -> PipelineExecutionStatus:
+        learning_results = tuple(
+            item.output
+            for item in state.stage_results.values()
+            if item.engine == "learning" and item.output is not None
+        )
+        if learning_results:
+            learning = learning_results[-1]
+            learning_status = getattr(learning, "status", None)
+            if isinstance(learning, dict):
+                learning_status = learning.get("status")
+            if str(getattr(learning_status, "value", learning_status)).lower() == (
+                "human_review_required"
+            ):
+                return PipelineExecutionStatus.WAITING_HUMAN_REVIEW
         execution_results = tuple(
             item.output
             for item in state.stage_results.values()

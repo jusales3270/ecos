@@ -47,6 +47,13 @@ class ObservationRepository(ABC):
         del event
         return self.save(result)
 
+    @abstractmethod
+    def list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[ObservationResult]:
+        """List canonical observations within one tenant and session."""
+        raise NotImplementedError
+
 
 class InMemoryObservationRepository(ObservationRepository):
     """Thread-safe canonical observation repository for local runtimes."""
@@ -78,6 +85,17 @@ class InMemoryObservationRepository(ObservationRepository):
                 return result.model_copy(deep=True)
             _validate_compatible(existing, result)
             return existing.model_copy(deep=True)
+
+    def list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[ObservationResult]:
+        with self._lock:
+            return [
+                item.model_copy(deep=True)
+                for item in self._results.values()
+                if item.organization_id == organization_id
+                and item.session_id == session_id
+            ]
 
     def save_terminal(
         self, result: ObservationResult, event: Event

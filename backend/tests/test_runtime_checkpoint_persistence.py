@@ -863,14 +863,16 @@ def test_resume_receives_reloaded_executing_session_and_never_paused(
 
     result = container.runtime_engine.resume_session(final_command)
 
-    assert result.status is PipelineExecutionStatus.COMPLETED
+    assert result.status is PipelineExecutionStatus.WAITING_HUMAN_REVIEW
     assert received_statuses == [SessionLifecycleStatus.EXECUTING]
     assert SessionLifecycleStatus.PAUSED not in received_statuses
     executing_save = next(
         item for item in save_calls if item[0] is RuntimeCheckpointStatus.EXECUTING
     )
     completed_save = next(
-        item for item in save_calls if item[0] is RuntimeCheckpointStatus.COMPLETED
+        item
+        for item in save_calls
+        if item[0] is RuntimeCheckpointStatus.WAITING_HUMAN_REVIEW
     )
     assert executing_save[2] == executing_save[1] - 1
     assert completed_save[2] == executing_save[1]
@@ -879,10 +881,10 @@ def test_resume_receives_reloaded_executing_session_and_never_paused(
         command.organization_id, command.session_id
     )
     assert completed is not None
-    assert completed.status is RuntimeCheckpointStatus.COMPLETED
+    assert completed.status is RuntimeCheckpointStatus.WAITING_HUMAN_REVIEW
     completed_session = container.session_service.get_session(command.session_id)
     assert completed_session is not None
-    assert completed_session.state.lifecycle_status is SessionLifecycleStatus.COMPLETED
+    assert completed_session.state.lifecycle_status is SessionLifecycleStatus.PAUSED
 
 
 def test_resume_waits_for_quorum_does_not_repeat_stages_and_executes_once(
@@ -947,7 +949,7 @@ def test_resume_waits_for_quorum_does_not_repeat_stages_and_executes_once(
             assert execution_counter.calls == 0
         else:
             final_command = resume_command
-            assert resumed.status is PipelineExecutionStatus.COMPLETED
+            assert resumed.status is PipelineExecutionStatus.WAITING_HUMAN_REVIEW
             assert current_governance.status is GovernanceResultStatus.AUTHORIZED
             assert current_governance.execution_authorized is True
 
@@ -969,7 +971,7 @@ def test_resume_waits_for_quorum_does_not_repeat_stages_and_executes_once(
     replayed_checkpoint = container.authenticated_runtime_service.get_checkpoint(
         start_command.organization_id, start_command.session_id
     )
-    assert replay.status is PipelineExecutionStatus.COMPLETED
+    assert replay.status is PipelineExecutionStatus.WAITING_HUMAN_REVIEW
     assert replay.checkpoint_version == completed.version
     assert replayed_checkpoint == completed
     assert execution_counter.calls == 1
@@ -1321,7 +1323,7 @@ def test_concurrent_final_approvals_execute_exactly_once(
 
     assert (
         sum(
-            item.status is PipelineExecutionStatus.COMPLETED
+            item.status is PipelineExecutionStatus.WAITING_HUMAN_REVIEW
             for item in results
             if not isinstance(item, Exception)
         )
@@ -1470,7 +1472,7 @@ def test_final_checkpoint_save_failure_keeps_execution_lock_and_blocks_replay(
     orchestrator_resume_calls = 0
 
     def fail_completed_save(checkpoint, *, expected_version):
-        if checkpoint.status is RuntimeCheckpointStatus.COMPLETED:
+        if checkpoint.status is RuntimeCheckpointStatus.WAITING_HUMAN_REVIEW:
             raise persistence_error
         return original_save(checkpoint, expected_version=expected_version)
 
@@ -1493,7 +1495,7 @@ def test_final_checkpoint_save_failure_keeps_execution_lock_and_blocks_replay(
     assert executing.status is RuntimeCheckpointStatus.EXECUTING
     session = container.session_service.get_session(command.session_id)
     assert session is not None
-    assert session.state.lifecycle_status is SessionLifecycleStatus.COMPLETED
+    assert session.state.lifecycle_status is SessionLifecycleStatus.PAUSED
 
     replay = container.runtime_engine.resume_session(final_command)
 

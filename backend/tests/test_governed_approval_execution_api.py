@@ -8,9 +8,9 @@ from uuid import UUID, uuid4, uuid5
 import pytest
 from fastapi.testclient import TestClient
 
-from ecos.events import EventType
+from ecos.core import settings
 from ecos.execution import ExecutionResult
-from ecos.governance import ApprovalRequestStatus, GovernanceResult
+from ecos.governance import ApprovalRequestStatus, GovernanceConfig, GovernanceResult
 from ecos.learning import LearningResult
 from ecos.main import app
 from ecos.observation import ObservationResult
@@ -93,7 +93,8 @@ def test_runtime_quorum_persists_partial_and_executes_exactly_once(
         operator_csrf = _login(
             client, "operator@demo.ecos.local", "operator-demo-password"
         )
-        session_id, approval = _start_runtime(client, operator_csrf, "runtime-quorum")
+        run_key = f"runtime-quorum-{uuid4()}"
+        session_id, approval = _start_runtime(client, operator_csrf, run_key)
         approval_id = approval["approval_id"]
         assert approval["status"] == "pending"
         assert approval["runtime_status"] == "waiting_approval"
@@ -102,10 +103,9 @@ def test_runtime_quorum_persists_partial_and_executes_exactly_once(
         _logout(client, operator_csrf)
 
         final_response = None
-        final_key = ""
         for index, (_, email, password) in enumerate(users, start=1):
             csrf = _login(client, email, password)
-            key = f"runtime-approval-{index}"
+            key = f"{run_key}-approval-{index}"
             response = client.post(
                 f"/api/v1/approvals/{approval_id}/approve",
                 json={"reason": f"reviewed by board member {index}"},
@@ -119,24 +119,39 @@ def test_runtime_quorum_persists_partial_and_executes_exactly_once(
                 _logout(client, csrf)
             else:
                 final_response = response
-                final_key = key
 
         assert final_response is not None
         assert final_response.json()["status"] == "approved"
-        assert final_response.json()["runtime_status"] == "completed"
-        assert execution_calls == 1
-        replay = client.post(
-            f"/api/v1/approvals/{approval_id}/approve",
-            json={"reason": f"reviewed by board member {minimum}"},
-            headers={
-                "X-CSRF-Token": csrf,
-                "Idempotency-Key": final_key,
-            },
-        )
-        assert replay.status_code == 200
-        assert replay.json() == final_response.json()
+        assert final_response.json()["runtime_status"] == "waiting_human_review"
         assert execution_calls == 1
 
+        reviews = client.get("/api/v1/learning/reviews")
+        assert reviews.status_code == 200
+        pending = [item for item in reviews.json() if item["session_id"] == session_id]
+        assert pending
+        candidate_id = pending[0]["learning_candidate_id"]
+        reviewed = client.post(
+            f"/api/v1/learning/reviews/{candidate_id}/approve",
+            json={"justification": "validated for organizational reuse"},
+            headers={
+                "X-CSRF-Token": csrf,
+                "Idempotency-Key": f"{run_key}-learning-review-approved",
+            },
+        )
+        assert reviewed.status_code == 200
+        assert reviewed.json()["review"]["status"] == "approved"
+        assert reviewed.json()["learning"]["status"] == "completed"
+        assert (
+            client.get(f"/api/v1/sessions/{session_id}").json()["status"] == "completed"
+        )
+        assert client.get("/api/v1/executions").json()[0]["fingerprint"]
+        assert client.get("/api/v1/observations").json()[0]["fingerprint"]
+        assert client.get("/api/v1/learning").json()[0]["validations"]
+        memories = client.get("/api/v1/memories")
+        assert memories.status_code == 200
+        assert any(
+            item["learning_candidate_id"] == candidate_id for item in memories.json()
+        )
         checkpoint, governance = _governance(container, session_id)
         assert checkpoint.status is RuntimeCheckpointStatus.COMPLETED
         assert checkpoint.resumable_state is None
@@ -159,15 +174,105 @@ def test_runtime_quorum_persists_partial_and_executes_exactly_once(
         assert execution.correlation_id == checkpoint.correlation_id
         assert observation.correlation_id == checkpoint.correlation_id
         assert learning.correlation_id == checkpoint.correlation_id
-        container.outbox_service.process_once()
-        terminal_event = next(
-            envelope.event
-            for envelope in container.event_bus.envelopes
-            if envelope.event.event_type is EventType.EXECUTION_COMPLETED
-            and envelope.event.payload.get("execution_id")
-            == str(execution.execution_id)
+
+
+@pytest.mark.skipif(
+    settings.runtime_checkpoint_repository != "postgres",
+    reason="requires the PostgreSQL homologation runtime",
+)
+def test_postgres_review_survives_restart_reuses_memory_and_isolates_tenant() -> None:
+    run_key = f"postgres-review-restart-{uuid4()}"
+    objective = f"Governed runtime {run_key}"
+    final_email = ""
+    final_password = ""
+    session_id = ""
+    candidate_id = ""
+    with TestClient(app) as client:
+        client.app.state.container.approval_policy_provider._config = GovernanceConfig(
+            board_quorum=1
         )
-        assert terminal_event.metadata.correlation_id == checkpoint.correlation_id
+        operator_csrf = _login(
+            client, "operator@demo.ecos.local", "operator-demo-password"
+        )
+        session_id, approval = _start_runtime(client, operator_csrf, run_key)
+        users = [
+            _create_board_user(client.app.state.container, index)
+            for index in range(int(approval["minimum_approvals"]))
+        ]
+        _logout(client, operator_csrf)
+        for index, (_, email, password) in enumerate(users):
+            csrf = _login(client, email, password)
+            response = client.post(
+                f"/api/v1/approvals/{approval['approval_id']}/approve",
+                json={"reason": f"postgres governed approval {index}"},
+                headers={
+                    "X-CSRF-Token": csrf,
+                    "Idempotency-Key": f"{run_key}-approval-{index}",
+                },
+            )
+            assert response.status_code == 200
+            final_email, final_password = email, password
+            if index < len(users) - 1:
+                _logout(client, csrf)
+        reviews = client.get(
+            f"/api/v1/learning/reviews?session_id={session_id}&status=pending"
+        )
+        assert reviews.status_code == 200
+        assert reviews.json()
+        candidate_id = reviews.json()[0]["learning_candidate_id"]
+        assert (
+            client.get(f"/api/v1/sessions/{session_id}").json()["status"]
+            == "waiting_human_review"
+        )
+
+    with TestClient(app) as restarted:
+        csrf = _login(restarted, final_email, final_password)
+        pending = restarted.get(
+            f"/api/v1/learning/reviews?session_id={session_id}&status=pending"
+        )
+        assert pending.status_code == 200
+        assert pending.json()[0]["learning_candidate_id"] == candidate_id
+        decided = restarted.post(
+            f"/api/v1/learning/reviews/{candidate_id}/approve",
+            json={"justification": "approved after process restart"},
+            headers={"X-CSRF-Token": csrf, "Idempotency-Key": f"{run_key}-review"},
+        )
+        assert decided.status_code == 200
+        assert decided.json()["learning"]["status"] == "completed"
+        memories = restarted.get(f"/api/v1/memories?session_id={session_id}").json()
+        assert memories
+
+        second = restarted.post(
+            "/api/v1/sara/interactions",
+            json={"message": objective, "history": [], "route_context": "/sessions"},
+            headers={
+                "X-CSRF-Token": csrf,
+                "Idempotency-Key": f"{run_key}-second-session",
+            },
+        )
+        assert second.status_code == 200
+        context = restarted.get(
+            f"/api/v1/sessions/{second.json()['session_id']}/cognitive"
+        ).json()["artifacts"]["context"]
+        memory_ids = {item["memory_id"] for item in context["memory_references"]}
+        assert memory_ids.intersection({item["id"] for item in memories})
+        _logout(restarted, csrf)
+
+        tenant_csrf = _login(
+            restarted, "operator@tenant-b.ecos.local", "tenant-b-demo-password"
+        )
+        assert (
+            restarted.get(f"/api/v1/learning?session_id={session_id}").status_code
+            == 403
+        )
+        assert (
+            restarted.get(f"/api/v1/memories?session_id={session_id}").status_code
+            == 403
+        )
+        assert (
+            restarted.get(f"/api/v1/sessions/{session_id}/cognitive").status_code == 403
+        )
+        _logout(restarted, tenant_csrf)
 
 
 def test_runtime_approval_idempotency_and_actor_are_enforced() -> None:

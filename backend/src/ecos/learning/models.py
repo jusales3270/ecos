@@ -76,6 +76,14 @@ class LearningValidationOutcome(StrEnum):
     POLICY_BLOCKED = "policy_blocked"
 
 
+class LearningReviewStatus(StrEnum):
+    """Persisted human decision lifecycle for a learning candidate."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class RelationshipType(StrEnum):
     """Non-causal relationship vocabulary."""
 
@@ -184,6 +192,24 @@ class LearningValidation(LearningModel):
     human_review_required: bool = False
     policy_references: tuple[str, ...] = Field(default_factory=tuple)
     reason_codes: tuple[str, ...] = Field(default_factory=tuple)
+
+
+class LearningCandidateReview(LearningModel):
+    """Auditable, tenant-scoped human review of one learning candidate."""
+
+    review_id: UUID
+    organization_id: UUID
+    session_id: UUID
+    learning_id: UUID
+    learning_candidate_id: UUID
+    status: LearningReviewStatus
+    justification: str | None = Field(default=None, max_length=1000)
+    actor_id: UUID | None = None
+    idempotency_key: str | None = Field(default=None, max_length=200)
+    decided_at: datetime | None = None
+    version: int = Field(default=1, ge=1)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class MemoryUpdateProposal(LearningModel):

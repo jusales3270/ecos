@@ -89,6 +89,108 @@ export type Execution = {
   updated_at: string;
 };
 
+export type CanonicalExecution = {
+  execution_id: string;
+  organization_id: string;
+  session_id: string;
+  status: string;
+  mode: string;
+  fingerprint: string;
+  started_at: string;
+  completed_at: string | null;
+  duration: number;
+  step_results: Array<Record<string, unknown>>;
+  outputs_by_connector: Record<string, unknown>;
+  failures: Array<Record<string, unknown>>;
+  reason_codes: string[];
+};
+
+export type CanonicalObservation = {
+  observation_id: string;
+  organization_id: string;
+  session_id: string;
+  execution_id: string | null;
+  status: string;
+  fingerprint: string;
+  observed_outcomes: Array<Record<string, unknown>>;
+  comparisons: Array<Record<string, unknown>>;
+  evidence: Array<Record<string, unknown>>;
+  feedback: Array<Record<string, unknown>>;
+  quality: Record<string, unknown>;
+  outcome_score: number;
+  confidence: number;
+  reason_codes: string[];
+};
+
+export type LearningCandidate = {
+  learning_candidate_id: string;
+  category: string;
+  statement: Record<string, unknown>;
+  confidence: number;
+  validation_status: string;
+  human_review_required: boolean;
+  evidence_references: string[];
+};
+
+export type CanonicalLearning = {
+  learning_id: string;
+  organization_id: string;
+  session_id: string;
+  observation_id: string;
+  status: string;
+  candidates: LearningCandidate[];
+  validations: Array<Record<string, unknown>>;
+  human_review_candidates: LearningCandidate[];
+  memory_update_proposals: Array<Record<string, unknown>>;
+  stored_memory_references: string[];
+  validation_summary: Record<string, number>;
+  reason_codes: string[];
+};
+
+export type LearningReview = {
+  review_id: string;
+  organization_id: string;
+  session_id: string;
+  learning_id: string;
+  learning_candidate_id: string;
+  status: "pending" | "approved" | "rejected";
+  justification: string | null;
+  actor_id: string | null;
+  decided_at: string | null;
+  version: number;
+  created_at: string;
+};
+
+export type ValidatedMemory = {
+  id: string;
+  organization_id: string;
+  type: string;
+  title: string;
+  description: string;
+  confidence: number;
+  session_id: string;
+  execution_id: string;
+  observation_id: string;
+  learning_id: string;
+  learning_candidate_id: string;
+  proposal_id: string;
+  policy_version: string;
+  validation_status: string;
+  evidence_references: string[];
+  source_references: string[];
+  validated_write_fingerprint: string;
+  version: number;
+  created_at: string;
+};
+
+export type CognitiveSession = {
+  session_id: string;
+  runtime_status: string;
+  checkpoint_version?: number;
+  planning?: Record<string, unknown>;
+  artifacts: Record<string, Record<string, unknown>>;
+};
+
 export type OperationalSession = {
   session_id: string;
   organization_id: string;
@@ -100,6 +202,7 @@ export type OperationalSession = {
     | "created"
     | "processing"
     | "waiting_approval"
+    | "waiting_human_review"
     | "approved"
     | "rejected"
     | "executing"

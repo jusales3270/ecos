@@ -308,8 +308,15 @@ class LearningExecutor(RuntimeEngineExecutor):
                 applicable_policies=tuple(
                     context.plan.governance_requirements.policy_checks
                 ),
-                human_review_state=None,
-                safe_metadata={"adapter": type(self).__name__},
+                human_review_state=(
+                    "enabled"
+                    if context.safe_metadata.get("authenticated") is True
+                    else None
+                ),
+                safe_metadata={
+                    "adapter": type(self).__name__,
+                    "objective": context.session.session.objective.title,
+                },
             )
         )
 

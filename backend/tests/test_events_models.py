@@ -153,6 +153,7 @@ def test_event_type_values() -> None:
         "ENGINE_FAILED",
         "STAGE_SKIPPED",
         "PIPELINE_WAITING_APPROVAL",
+        "PIPELINE_WAITING_HUMAN_REVIEW",
         "PIPELINE_BLOCKED",
         "PIPELINE_RESUMED",
         "PIPELINE_COMPLETED",

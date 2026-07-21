@@ -64,6 +64,13 @@ const navItems: NavItem[] = [
     permission: "execution:execute"
   },
   {
+    to: "/observations",
+    label: "Observações",
+    area: "Operação",
+    icon: Activity,
+    permission: "observation:read"
+  },
+  {
     to: "/audit",
     label: "Observabilidade",
     area: "Operação",
@@ -530,7 +537,8 @@ function currentStageForStatus(status: string) {
     failed: "observação",
     processing: "raciocínio",
     rejected: "aprovação",
-    waiting_approval: "aprovação"
+    waiting_approval: "aprovação",
+    waiting_human_review: "aprendizado"
   };
   return map[status] ?? status.toLowerCase();
 }

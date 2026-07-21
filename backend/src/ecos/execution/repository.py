@@ -48,6 +48,13 @@ class ExecutionResultRepository(ABC):
         del event
         return self.save(result)
 
+    @abstractmethod
+    def list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[ExecutionResult]:
+        """List canonical results for one tenant-scoped cognitive session."""
+        raise NotImplementedError
+
 
 class InMemoryExecutionResultRepository(ExecutionResultRepository):
     """Thread-safe immutable repository used by tests and local runtime."""
@@ -88,6 +95,17 @@ class InMemoryExecutionResultRepository(ExecutionResultRepository):
                     "execution result identity or fingerprint conflict"
                 )
             return existing.model_copy(deep=True)
+
+    def list_by_session(
+        self, organization_id: UUID, session_id: UUID
+    ) -> list[ExecutionResult]:
+        with self._lock:
+            return [
+                item.model_copy(deep=True)
+                for item in self._results.values()
+                if item.organization_id == organization_id
+                and item.session_id == session_id
+            ]
 
     def save_terminal(self, result: ExecutionResult, event: Event) -> ExecutionResult:
         with self._lock:
